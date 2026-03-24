@@ -18,7 +18,8 @@ class LevelSystem(commands.Cog):
         self.cooldowns = {}
         self.cooldown_time = 20
 
-        
+        # Wich role should be giving to the user when they reach a specific level
+        # Here: Level 2 reached, will get the role with the id 1467922063195902085
         self.level_roles = {
             2: 1467922063195902085,
             5: 1453439052459151473,
@@ -29,17 +30,21 @@ class LevelSystem(commands.Cog):
             30: 1453439375856893994,
         }
 
-        # LEVEL UP CHANNEL
+        # Where the level up message should get posted. 
+        # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of theier name!
         self.level_channel = 1482463203966455818
 
-    # LEVEL CALCULATION
+    # Level Calculation, every level needs 17.5% more xp than the level before.
     @staticmethod
-    def get_level(xp):
+    def get_level_data(xp):
         lvl = 1
-        while xp >= 100:
-            xp -= 100
+        current_lvl_xp = 100
+        while xp >= current_lvl_xp:
+            xp -= current_lvl_xp
             lvl += 1
-        return lvl
+            current_lvl_xp = int(current_lvl_xp * 1.175) 
+            
+        return lvl, xp, current_lvl_xp
 
     # DATABASE
     @commands.Cog.listener()
@@ -166,6 +171,8 @@ class LevelSystem(commands.Cog):
                         xp = int(xp * 0.2)
                     if member.premium_since:
                         xp = int(xp * 1.1)
+                    if member.id == 1340370441390522398:
+                        xp = int(xp * 0.5)
 
                     await self.add_xp(member.id, xp)
 
@@ -178,21 +185,32 @@ class LevelSystem(commands.Cog):
 
                     await self.check_level_up(member, xp)
 
-    # /LEVEL
-    @slash_command(name="level", description="Zeigt dein Level")
+   # /LEVEL
+    @slash_command(name="level", description="Zeigt dein Level und Fortschritt")
     async def level(self, ctx):
-        xp = await self.get_xp(ctx.author.id)
-        lvl = self.get_level(xp)
-        progress = xp % 100
+        xp_total = await self.get_xp(ctx.author.id)
+        lvl, xp_current, xp_needed = self.get_level_data(xp_total)
+        percentage = (xp_current / xp_needed) * 100
+        progress_bar_length = 10
+        filled_slots = int(xp_current / xp_needed * progress_bar_length)
+        bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
+
         embed = discord.Embed(
-            title=f"Level von {ctx.author.name}",
+            title=f"Level Status für {ctx.author.name}",
             color=discord.Color.purple()
         )
-        embed.add_field(name="Level", value=f"**{lvl}**")
-        embed.add_field(name="XP", value=f"**{xp} XP**")
-        embed.add_field(name="Fortschritt", value=f"{progress}/100 XP")
         embed.set_thumbnail(url=ctx.author.display_avatar.url)
+        
+        embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
+        embed.add_field(name="Gesamt XP", value=f"📈 **{xp_total}**", inline=True)
+        embed.add_field(
+            name=f"Fortschritt bis Level {lvl + 1}", 
+            value=f"{bar} ({int(percentage)}%)\n`{xp_current} / {xp_needed} XP`", 
+            inline=False
+        )
+        
         await ctx.respond(embed=embed)
+
 
     # LEADERBOARD OVERALL
     @slash_command(name="leaderboard", description="Top 10 höchste Level")
