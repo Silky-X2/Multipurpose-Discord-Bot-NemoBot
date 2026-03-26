@@ -2,6 +2,8 @@ import discord
 import os
 from dotenv import load_dotenv
 
+load_dotenv()
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -14,7 +16,7 @@ activity = discord.Activity(
 
 bot = discord.Bot (
     intents=intents,
-    debug_guilds=[1223748094886412420],
+    debug_guilds=[1257572919153004575],
     status=status,
     activity=activity
 )

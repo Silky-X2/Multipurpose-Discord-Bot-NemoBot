@@ -3,12 +3,45 @@ from asyncio import wait
 import discord
 from discord.ext import commands, tasks
 from discord.commands import slash_command
+from discord.ui import View, Button
+from discord import Interaction
 import aiosqlite
 import random
 import time
 
 
 class LevelSystem(commands.Cog):
+    # XP Boost roles (placeholder IDs)
+    XP_BOOST_ROLES = {
+        111111111111111111: 1.50,  # 1.50x boost
+        222222222222222222: 1.75,  # 1.75x boost
+        333333333333333333: 2.00,  # 2.00x boost
+        444444444444444444: 1.25,  # 1.25x boost
+    }
+
+    # Cooldown for reaction XP (user_id: last_timestamp)
+    reaction_xp_cooldowns = {}
+
+    # REACTION XP
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        if user.bot or not reaction.message.guild:
+            return
+        now = time.time()
+        last = self.reaction_xp_cooldowns.get(user.id, 0)
+        if now - last < 3600:  # 1 hour cooldown
+            return
+        self.reaction_xp_cooldowns[user.id] = now
+        xp = 0.1
+        # XP Boost for roles
+        member = reaction.message.guild.get_member(user.id)
+        if member and hasattr(member, 'roles'):
+            boost = 1.0
+            for role in member.roles:
+                if role.id in self.XP_BOOST_ROLES:
+                    boost = max(boost, self.XP_BOOST_ROLES[role.id])
+            xp = xp * boost
+        await self.add_xp(user.id, xp)
 
     def __init__(self, bot):
         self.bot = bot
@@ -34,16 +67,15 @@ class LevelSystem(commands.Cog):
         # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of theier name!
         self.level_channel = 1482463203966455818
 
-    # Level Calculation, every level needs 17.5% more xp than the level before.
+    # Level Calculation, start at level 0, need 10 XP for level 1, then every level needs 17.5% more XP than the previous.
     @staticmethod
     def get_level_data(xp):
-        lvl = 1
-        current_lvl_xp = 100
+        lvl = 0
+        current_lvl_xp = 10
         while xp >= current_lvl_xp:
             xp -= current_lvl_xp
             lvl += 1
-            current_lvl_xp = int(current_lvl_xp * 1.175) 
-            
+            current_lvl_xp = int(current_lvl_xp * 1.175)
         return lvl, xp, current_lvl_xp
 
     # DATABASE
@@ -143,6 +175,14 @@ class LevelSystem(commands.Cog):
         if message.author.premium_since:
             xp = int(xp * 1.1)
 
+        # XP Boost for roles
+        if hasattr(message.author, 'roles'):
+            boost = 1.0
+            for role in message.author.roles:
+                if role.id in self.XP_BOOST_ROLES:
+                    boost = max(boost, self.XP_BOOST_ROLES[role.id])
+            xp = int(xp * boost)
+
         await self.add_xp(message.author.id, xp)
 
         async with aiosqlite.connect(self.DB) as db:
@@ -174,6 +214,12 @@ class LevelSystem(commands.Cog):
                     if member.id == 1340370441390522398:
                         xp = int(xp * 0.5)
 
+                    # XP Boost for roles
+                    boost = 1.0
+                    for role in getattr(member, 'roles', []):
+                        if role.id in self.XP_BOOST_ROLES:
+                            boost = max(boost, self.XP_BOOST_ROLES[role.id])
+                    xp = int(xp * boost)
                     await self.add_xp(member.id, xp)
 
                     async with aiosqlite.connect(self.DB) as db:
@@ -187,95 +233,152 @@ class LevelSystem(commands.Cog):
 
    # /LEVEL
     @slash_command(name="level", description="Zeigt dein Level und Fortschritt")
-    async def level(self, ctx):
-        xp_total = await self.get_xp(ctx.author.id)
+    async def level(self, ctx, user: discord.Option(discord.Member, "Der Benutzer, dessen Level angezeigt werden soll", required=False) = None):
+        member = user or ctx.author
+        xp_total = await self.get_xp(member.id)
         lvl, xp_current, xp_needed = self.get_level_data(xp_total)
         percentage = (xp_current / xp_needed) * 100
         progress_bar_length = 10
         filled_slots = int(xp_current / xp_needed * progress_bar_length)
         bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
 
+        # Format XP values to one decimal place if needed
+        def fmt(x):
+            return f"{x:.1f}" if isinstance(x, float) and not x.is_integer() else str(int(x))
+
         embed = discord.Embed(
-            title=f"Level Status für {ctx.author.name}",
+            title=f"Level Status für {member.display_name}",
             color=discord.Color.purple()
         )
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
+        embed.set_thumbnail(url=member.display_avatar.url)
         
         embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
-        embed.add_field(name="Gesamt XP", value=f"📈 **{xp_total}**", inline=True)
+        embed.add_field(name="Gesamt XP", value=f"📈 **{fmt(xp_total)}**", inline=True)
         embed.add_field(
             name=f"Fortschritt bis Level {lvl + 1}", 
-            value=f"{bar} ({int(percentage)}%)\n`{xp_current} / {xp_needed} XP`", 
+            value=f"{bar} ({int(percentage)}%)\n`{fmt(xp_current)} / {fmt(xp_needed)} XP`", 
             inline=False
         )
         
         await ctx.respond(embed=embed)
 
 
-    # LEADERBOARD OVERALL
-    @slash_command(name="leaderboard", description="Top 10 höchste Level")
+
+
+    @slash_command(name="leaderboard", description="Show interactive leaderboard")
     async def leaderboard(self, ctx):
-        desc = ""
-        async with aiosqlite.connect(self.DB) as db:
-            async with db.execute(
-                "SELECT user_id, xp FROM users ORDER BY xp DESC LIMIT 10"
-            ) as cursor:
-                i = 1
-                async for user_id, xp in cursor:
-                    desc += f"**{i}.** <@{user_id}> — `{xp} XP`\n"
-                    i += 1
-        embed = discord.Embed(
-            title="🏆 Gesamt Leaderboard",
-            description=desc,
-            color=discord.Color.purple()
-        )
-        await ctx.respond(embed=embed)
+        view = self.LeaderboardView(self)
+        await view.send_initial(ctx)
 
-    # MESSAGE LEADERBOARD
-    @slash_command(name="leaderboard_messages", description="Top 10 meist gesendete Nachrichten")
-    async def leaderboard_messages(self, ctx):
-        desc = ""
-        async with aiosqlite.connect(self.DB) as db:
-            async with db.execute(
-                "SELECT user_id, msg_count FROM users ORDER BY msg_count DESC LIMIT 10"
-            ) as cursor:
-                i = 1
-                async for user_id, msgs in cursor:
-                    desc += f"**{i}.** <@{user_id}> — `{msgs} Nachrichten`\n"
-                    i += 1
-        embed = discord.Embed(
-            title="💬 Nachrichten Leaderboard",
-            description=desc,
-            color=discord.Color.purple()
-        )
-        await ctx.respond(embed=embed)
-        
-    # VOICE LEADERBOARD
-    @slash_command(name="leaderboard_voice", description="Top 10 Voice Zeiten")
-    async def leaderboard_voice(self, ctx):
+    class LeaderboardView(View):
+        def __init__(self, cog):
+            super().__init__(timeout=120)
+            self.cog = cog
+            self.mode = "level"  # level, messages, voice
+            self.level_display = "level"  # level, total_xp
 
-        desc = ""
+            self.level_btn = Button(label="Level", style=discord.ButtonStyle.primary)
+            self.level_btn.callback = self.level_button
+            self.add_item(self.level_btn)
 
-        async with aiosqlite.connect(self.DB) as db:
+            self.messages_btn = Button(label="Messages", style=discord.ButtonStyle.secondary)
+            self.messages_btn.callback = self.messages_button
+            self.add_item(self.messages_btn)
 
-            async with db.execute(
-            "SELECT user_id, voice_time FROM users ORDER BY voice_time DESC LIMIT 10"
-            ) as cursor:
+            self.voice_btn = Button(label="Voice", style=discord.ButtonStyle.secondary)
+            self.voice_btn.callback = self.voice_button
+            self.add_item(self.voice_btn)
 
-                i = 1
+            self.toggle_btn = Button(label="Toggle Level/XP", style=discord.ButtonStyle.success)
+            self.toggle_btn.callback = self.toggle_level_xp
+            self.add_item(self.toggle_btn)
 
-                async for user_id, vt in cursor:
+        async def send_initial(self, ctx):
+            embed = await self.get_embed()
+            await ctx.respond(embed=embed, view=self)
 
-                    desc += f"**{i}.** <@{user_id}> — `{vt} Minuten`\n"
-                    i += 1
+        async def interaction_check(self, interaction: Interaction) -> bool:
+            return True
 
-        embed = discord.Embed(
-            title="🎤 Voice Leaderboard",
+        async def level_button(self, interaction):
+            self.mode = "level"
+            embed = await self.get_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        async def messages_button(self, interaction):
+            self.mode = "messages"
+            embed = await self.get_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        async def voice_button(self, interaction):
+            self.mode = "voice"
+            embed = await self.get_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        async def toggle_level_xp(self, interaction):
+            if self.level_display == "level":
+                self.level_display = "total_xp"
+            else:
+                self.level_display = "level"
+            embed = await self.get_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        async def get_embed(self):
+            if self.mode == "level":
+                return await self.get_level_embed()
+            elif self.mode == "messages":
+                return await self.get_messages_embed()
+            elif self.mode == "voice":
+                return await self.get_voice_embed()
+
+        async def get_level_embed(self):
+            desc = ""
+            async with aiosqlite.connect(self.cog.DB) as db:
+                async with db.execute("SELECT user_id, xp FROM users ORDER BY xp DESC LIMIT 10") as cursor:
+                    i = 1
+                    async for user_id, xp in cursor:
+                        lvl, _, _ = self.cog.get_level_data(xp)
+                        if self.level_display == "level":
+                            desc += f"{i}. <@{user_id}> Level {lvl}\n"
+                        else:
+                            desc += f"{i}. <@{user_id}> Total XP: {xp}\n"
+                        i += 1
+            embed = discord.Embed(
+                title="🏆 Level Leaderboard",
                 description=desc,
-            color=discord.Color.purple()
-    )
+                color=discord.Color.purple()
+            )
+            return embed
 
-        await ctx.respond(embed=embed)
+        async def get_messages_embed(self):
+            desc = ""
+            async with aiosqlite.connect(self.cog.DB) as db:
+                async with db.execute("SELECT user_id, msg_count FROM users ORDER BY msg_count DESC LIMIT 10") as cursor:
+                    i = 1
+                    async for user_id, msgs in cursor:
+                        desc += f"{i}. <@{user_id}> — {msgs} messages\n"
+                        i += 1
+            embed = discord.Embed(
+                title="💬 Message Leaderboard",
+                description=desc,
+                color=discord.Color.purple()
+            )
+            return embed
+
+        async def get_voice_embed(self):
+            desc = ""
+            async with aiosqlite.connect(self.cog.DB) as db:
+                async with db.execute("SELECT user_id, voice_time FROM users ORDER BY voice_time DESC LIMIT 10") as cursor:
+                    i = 1
+                    async for user_id, vt in cursor:
+                        desc += f"{i}. <@{user_id}> — {vt} minutes\n"
+                        i += 1
+            embed = discord.Embed(
+                title="🎤 Voice Leaderboard",
+                description=desc,
+                color=discord.Color.purple()
+            )
+            return embed
 
 
 def setup(bot):
