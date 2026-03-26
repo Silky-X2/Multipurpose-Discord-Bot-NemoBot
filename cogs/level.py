@@ -64,7 +64,7 @@ class LevelSystem(commands.Cog):
         }
 
         # Where the level up message should get posted. 
-        # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of theier name!
+        # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of their name!
         self.level_channel = 1482463203966455818
 
     # Level Calculation, start at level 0, need 10 XP for level 1, then every level needs 17.5% more XP than the previous.
