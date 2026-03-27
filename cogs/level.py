@@ -8,9 +8,69 @@ from discord import Interaction
 import aiosqlite
 import random
 import time
+from typing import Optional
+
+@slash_command(name="level", description="Zeigt dein Level und Fortschritt")
+async def level(self, ctx, user: Optional[discord.Member] = None):
+    member = user or ctx.author
+    # Fetch both XP and level from the database
+    async with aiosqlite.connect(self.DB) as db:
+        async with db.execute("SELECT xp, level FROM users WHERE user_id = ?", (member.id,)) as cursor:
+            result = await cursor.fetchone()
+            if result:
+                xp_total, lvl = result
+            else:
+                xp_total, lvl = 0, 0
+
+    # Calculate progress bar based on XP and current level's XP requirement
+    _, xp_current, xp_needed = self.get_level_data(xp_total)
+    progress_bar_length = 10
+    filled_slots = int(xp_current / xp_needed * progress_bar_length) if xp_needed else 0
+    bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
+
+    def fmt(x):
+        return f"{x:.1f}" if isinstance(x, float) else str(x)
+
+    embed = discord.Embed(
+        title=f"Level Status für {member.display_name}",
+        color=discord.Color.purple()
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
+    embed.add_field(name="Gesamt XP", value=f"📈 **{fmt(xp_total)}**", inline=True)
+    embed.add_field(name="Fortschritt", value=f"{bar} ({fmt(xp_current)}/{fmt(xp_needed)})", inline=False)
+    await ctx.respond(embed=embed)
 
 
 class LevelSystem(commands.Cog):
+    XP_GROWTH = 1.175  # 17.5% growth per level
+
+    async def recalculate_all_levels(self, channel=None):
+        """
+        Recalculate all user levels in the DB based on their XP and update the DB.
+        Optionally send progress to a Discord channel.
+        """
+        async with aiosqlite.connect(self.DB) as db:
+            # Add remain_xp column if not present
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN remain_xp INTEGER DEFAULT 0")
+                await db.commit()
+            except Exception:
+                pass
+            async with db.execute("SELECT user_id, xp, level, remain_xp FROM users") as cursor:
+                users = await cursor.fetchall()
+            updated = 0
+            for user_id, xp, old_level, old_remain in users:
+                lvl, remain_xp, xp_needed = self.get_level_data(xp, self.XP_GROWTH)
+                await db.execute("UPDATE users SET level = ?, remain_xp = ? WHERE user_id = ?", (lvl, remain_xp, user_id))
+                await db.commit()
+                updated += 1
+                if channel and updated % 25 == 0:
+                    await channel.send(f"{updated} Nutzer recalculated...")
+            if channel:
+                await channel.send(f"Recalculation abgeschlossen für {updated} Nutzer. (Level werden dynamisch aus XP berechnet)")
+        return updated
+
     # XP Boost roles (placeholder IDs)
     XP_BOOST_ROLES = {
         111111111111111111: 1.50,  # 1.50x boost
@@ -19,8 +79,15 @@ class LevelSystem(commands.Cog):
         444444444444444444: 1.25,  # 1.25x boost
     }
 
+    # Booster stacking toggle (set True to enable stacking, False for only highest boost)
+    booster_stack_enabled = False  # Set to True for stacking, False for only highest
+
     # Cooldown for reaction XP (user_id: last_timestamp)
     reaction_xp_cooldowns = {}
+
+    def get_level(self, xp):
+        lvl, _, _ = self.get_level_data(xp)
+        return lvl
 
     # REACTION XP
     @commands.Cog.listener()
@@ -33,13 +100,18 @@ class LevelSystem(commands.Cog):
             return
         self.reaction_xp_cooldowns[user.id] = now
         xp = 0.1
-        # XP Boost for roles
+        # XP Boost for roles (skip excluded user)
         member = reaction.message.guild.get_member(user.id)
-        if member and hasattr(member, 'roles'):
+        if member and hasattr(member, 'roles') and member.id != 1340370441390522398:
             boost = 1.0
-            for role in member.roles:
-                if role.id in self.XP_BOOST_ROLES:
-                    boost = max(boost, self.XP_BOOST_ROLES[role.id])
+            if self.booster_stack_enabled:
+                for role in member.roles:
+                    if role.id in self.XP_BOOST_ROLES:
+                        boost *= self.XP_BOOST_ROLES[role.id]
+            else:
+                for role in member.roles:
+                    if role.id in self.XP_BOOST_ROLES:
+                        boost = max(boost, self.XP_BOOST_ROLES[role.id])
             xp = xp * boost
         await self.add_xp(user.id, xp)
 
@@ -69,14 +141,49 @@ class LevelSystem(commands.Cog):
 
     # Level Calculation, start at level 0, need 10 XP for level 1, then every level needs 17.5% more XP than the previous.
     @staticmethod
-    def get_level_data(xp):
+    def get_level_data(xp, growth=1.175):
+        import math
         lvl = 0
         current_lvl_xp = 10
         while xp >= current_lvl_xp:
             xp -= current_lvl_xp
             lvl += 1
-            current_lvl_xp = int(current_lvl_xp * 1.175)
+            current_lvl_xp = math.ceil(current_lvl_xp * growth)
         return lvl, xp, current_lvl_xp
+    @slash_command(name="level", description="Zeigt dein Level und Fortschritt")
+    async def level(self, ctx, user: Optional[discord.Member] = None):
+        member = user or ctx.author
+        # Fetch XP, level, and remain_xp from the database
+        async with aiosqlite.connect(self.DB) as db:
+            async with db.execute("SELECT xp, level, remain_xp FROM users WHERE user_id = ?", (member.id,)) as cursor:
+                result = await cursor.fetchone()
+                if result:
+                    xp_total, lvl, xp_current = result
+                else:
+                    xp_total, lvl, xp_current = 0, 0, 0
+
+        # Calculate the XP needed for the user's current level
+        import math
+        base_xp = 10
+        xp_needed = base_xp
+        for i in range(lvl):
+            xp_needed = math.ceil(xp_needed * self.XP_GROWTH)
+        progress_bar_length = 10
+        filled_slots = int(xp_current / xp_needed * progress_bar_length) if xp_needed else 0
+        bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
+
+        def fmt(x):
+            return f"{x:.1f}" if isinstance(x, float) else str(x)
+
+        embed = discord.Embed(
+            title=f"Level Status für {member.display_name}",
+            color=discord.Color.purple()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
+        embed.add_field(name="Gesamt XP", value=f"📈 **{fmt(xp_total)}**", inline=True)
+        embed.add_field(name="Fortschritt", value=f"{bar} ({fmt(xp_current)}/{fmt(xp_needed)})", inline=False)
+        await ctx.respond(embed=embed)
 
     # DATABASE
     @commands.Cog.listener()
@@ -87,9 +194,16 @@ class LevelSystem(commands.Cog):
                 user_id INTEGER PRIMARY KEY,
                 msg_count INTEGER DEFAULT 0,
                 voice_time INTEGER DEFAULT 0,
-                xp INTEGER DEFAULT 0
+                xp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 0
             )
             """)
+            # Try to add the level column if it doesn't exist (safe migration)
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN level INTEGER DEFAULT 0")
+                await db.commit()
+            except Exception:
+                pass  # Ignore if already exists
             await db.commit()
 
         
@@ -175,12 +289,17 @@ class LevelSystem(commands.Cog):
         if message.author.premium_since:
             xp = int(xp * 1.1)
 
-        # XP Boost for roles
-        if hasattr(message.author, 'roles'):
+        # XP Boost for roles (skip excluded user)
+        if hasattr(message.author, 'roles') and message.author.id != 1340370441390522398:
             boost = 1.0
-            for role in message.author.roles:
-                if role.id in self.XP_BOOST_ROLES:
-                    boost = max(boost, self.XP_BOOST_ROLES[role.id])
+            if self.booster_stack_enabled:
+                for role in message.author.roles:
+                    if role.id in self.XP_BOOST_ROLES:
+                        boost *= self.XP_BOOST_ROLES[role.id]
+            else:
+                for role in message.author.roles:
+                    if role.id in self.XP_BOOST_ROLES:
+                        boost = max(boost, self.XP_BOOST_ROLES[role.id])
             xp = int(xp * boost)
 
         await self.add_xp(message.author.id, xp)
@@ -214,11 +333,17 @@ class LevelSystem(commands.Cog):
                     if member.id == 1340370441390522398:
                         xp = int(xp * 0.5)
 
-                    # XP Boost for roles
+                    # XP Boost for roles (skip excluded user)
                     boost = 1.0
-                    for role in getattr(member, 'roles', []):
-                        if role.id in self.XP_BOOST_ROLES:
-                            boost = max(boost, self.XP_BOOST_ROLES[role.id])
+                    if member.id != 1340370441390522398:
+                        if self.booster_stack_enabled:
+                            for role in getattr(member, 'roles', []):
+                                if role.id in self.XP_BOOST_ROLES:
+                                    boost *= self.XP_BOOST_ROLES[role.id]
+                        else:
+                            for role in getattr(member, 'roles', []):
+                                if role.id in self.XP_BOOST_ROLES:
+                                    boost = max(boost, self.XP_BOOST_ROLES[role.id])
                     xp = int(xp * boost)
                     await self.add_xp(member.id, xp)
 
@@ -231,9 +356,12 @@ class LevelSystem(commands.Cog):
 
                     await self.check_level_up(member, xp)
 
+    # To toggle stacking, set booster_stack_enabled above to True or False in code.
+
    # /LEVEL
+
     @slash_command(name="level", description="Zeigt dein Level und Fortschritt")
-    async def level(self, ctx, user: discord.Option(discord.Member, "Der Benutzer, dessen Level angezeigt werden soll", required=False) = None):
+    async def level(self, ctx, user: Optional[discord.Member]= None):
         member = user or ctx.author
         xp_total = await self.get_xp(member.id)
         lvl, xp_current, xp_needed = self.get_level_data(xp_total)

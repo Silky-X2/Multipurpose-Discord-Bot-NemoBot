@@ -1,6 +1,7 @@
 
 # NemoBot — Multipurpose Discord Bot
 
+> A modern, fully customizable Discord bot with a robust leveling system, voice XP, giveaways, interactive leaderboards, and role rewards. Built with [py-cord](https://github.com/Pycord-Development/pycord).
 
 ---
 

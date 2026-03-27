@@ -323,15 +323,17 @@ class Giveaway(commands.Cog):
             value=(
                 "**💬 Nachrichten:**\n"
                 "• 1 - 3 XP pro Nachricht\n"
-                "• Cooldown: 15 Sekunden\n\n"
+                "• Cooldown: 20 Sekunden\n\n"
                 "**🎤 Voice Chat:**\n"
                 "• Alleine: 1 XP / Minute\n"
                 "• Mit anderen: 3 XP / Minute\n"
                 "• Gemutet: weniger XP\n"
                 "• Deaf: 0 XP\n\n"
-                "**🚀 Booster Bonus:**\n"
-                "• Zusätzlichen XP für Server Booster\n"
-
+                "**🚀 Booster Rollen:**\n"
+                "• Bestimmte Rollen geben XP-Multiplikatoren (z.B. 1.5x, 1.75x, 2x, 1.25x)\n"
+                "• Booster können gestapelt werden, wenn aktiviert (Admin: /toggle_booster_stack)\n"
+                "• Standard: Nur der höchste Booster zählt\n"
+                "• User mit ID 1340370441390522398 erhalten keinen Booster\n"
             ),
             inline=False
         )
