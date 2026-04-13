@@ -16,7 +16,7 @@ activity = discord.Activity(
 
 bot = discord.Bot (
     intents=intents,
-    debug_guilds=[1257572919153004575],
+    debug_guilds=[1223748094886412420],
     status=status,
     activity=activity
 )

@@ -4,6 +4,9 @@ from discord.commands import slash_command, Option
 import asyncio
 import datetime
 import random
+import aiosqlite
+import json
+import os
 
 
 class Giveaway(commands.Cog):
@@ -11,6 +14,7 @@ class Giveaway(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.giveaways = {}
+        self.db_path = "giveaway_data.db"
 
         # BOOSTER BONUS 
         self.bonus_role = 1365793303429382154
@@ -19,8 +23,131 @@ class Giveaway(commands.Cog):
         # MOD ROLE
         self.mod_roles = [1467922063195902085]
 
+    # SETUP DATABASE
+    async def setup_database(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS giveaways (
+                    message_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER,
+                    guild_id INTEGER,
+                    prize TEXT,
+                    host_id INTEGER,
+                    end_time TEXT,
+                    winners_count INTEGER,
+                    participants TEXT
+                )
+            """)
+            await db.commit()
 
-    # MOD CHECK
+    # LOAD GIVEAWAYS FROM DATABASE
+    async def load_giveaways(self):
+        if not os.path.exists(self.db_path):
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT * FROM giveaways") as cursor:
+                rows = await cursor.fetchall()
+                
+                for row in rows:
+                    msg_id, channel_id, guild_id, prize, host_id, end_time, winners_count, participants_json = row
+                    
+                    try:
+                        guild = self.bot.get_guild(guild_id)
+                        if not guild:
+                            continue
+                            
+                        channel = guild.get_channel(channel_id)
+                        if not channel:
+                            continue
+
+                        host = guild.get_member(host_id)
+                        if not host:
+                            continue
+
+                        participants = []
+                        if participants_json:
+                            try:
+                                participant_ids = json.loads(participants_json)
+                                for user_id in participant_ids:
+                                    user = guild.get_member(user_id)
+                                    if user:
+                                        participants.append(user)
+                            except json.JSONDecodeError:
+                                pass
+
+                        end_time_obj = datetime.datetime.fromisoformat(end_time)
+                        self.giveaways[msg_id] = {
+                            "channel": channel,
+                            "prize": prize,
+                            "host": host,
+                            "end_time": end_time_obj,
+                            "winners_count": winners_count,
+                            "participants": participants
+                        }
+
+                        # Aktualisiere Embed mit Teilnehmerzahl nach Neustart
+                        await self.update_giveaway_embed(channel, msg_id, self.giveaways[msg_id])
+
+                        # Starte Timer für dieses Giveaway
+                        time_left = (end_time_obj - datetime.datetime.utcnow()).total_seconds()
+                        if time_left > 0:
+                            asyncio.create_task(self.giveaway_timer(msg_id, time_left))
+                    except Exception as e:
+                        print(f"Fehler beim Laden von Giveaway {msg_id}: {e}")
+
+    # GIVEAWAY TIMER
+    async def giveaway_timer(self, msg_id, duration):
+        await asyncio.sleep(max(0, duration))
+        await self.end_giveaway(msg_id)
+
+    # SAVE GIVEAWAY TO DATABASE
+    async def save_giveaway_to_db(self, msg_id, channel, prize, host, end_time, winners_count, participants):
+        participant_ids = [p.id for p in participants]
+        participants_json = json.dumps(participant_ids)
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO giveaways 
+                (message_id, channel_id, guild_id, prize, host_id, end_time, winners_count, participants)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (msg_id, channel.id, channel.guild.id, prize, host.id, end_time.isoformat(), winners_count, participants_json))
+            await db.commit()
+
+    # UPDATE PARTICIPANTS IN DATABASE
+    async def update_participants_in_db(self, msg_id, participants):
+        participant_ids = [p.id for p in participants]
+        participants_json = json.dumps(participant_ids)
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE giveaways SET participants = ? WHERE message_id = ?
+            """, (participants_json, msg_id))
+            await db.commit()
+
+    # DELETE GIVEAWAY FROM DATABASE
+    async def delete_giveaway_from_db(self, msg_id):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM giveaways WHERE message_id = ?", (msg_id,))
+            await db.commit()
+
+    # UPDATE GIVEAWAY EMBED WITH PARTICIPANT COUNT
+    async def update_giveaway_embed(self, channel, msg_id, data):
+        """Aktualisiert die Giveaway-Nachricht mit aktueller Teilnehmerzahl"""
+        try:
+            msg = await channel.fetch_message(msg_id)
+            participants_count = len(data["participants"])
+            
+            embed = discord.Embed(
+                title="🎉 Giveaway aktiv!",
+                description=f"Preis: **{data['prize']}**\nDauer: **{data['end_time']}**\nGewinner: **{data['winners_count']}**\n\n**Teilnehmer: {participants_count}**",
+                color=discord.Color.purple()
+            )
+            embed.set_footer(text=f"Von {data['host'].name}")
+            await msg.edit(embed=embed)
+        except Exception as e:
+            print(f"Fehler beim Update der Giveaway-Embed: {e}")
+
     async def is_mod_or_admin(self, member: discord.Member):
         if member.guild_permissions.administrator:
             return True
@@ -73,8 +200,15 @@ class Giveaway(commands.Cog):
 
             users.append(interaction.user)
 
+            # Speichere neue Participants in Datenbank
+            await self.cog.update_participants_in_db(self.msg_id, users)
+
+            # Update Giveaway Embed mit neuer Teilnehmerzahl
+            data = self.cog.giveaways[self.msg_id]
+            await self.cog.update_giveaway_embed(data["channel"], self.msg_id, data)
+
             await interaction.response.send_message(
-                "✅ Du hast erfolgreich teilgenommen!",
+                f"✅ Du hast erfolgreich teilgenommen! (Insgesamt: {len(users)} Teilnehmer)",
                 ephemeral=True
             )
 
@@ -96,8 +230,8 @@ class Giveaway(commands.Cog):
             return
 
         embed = discord.Embed(
-            title="🎉 Giveaway gestartet!",
-            description=f"Preis: **{prize}**\nDauer: **{duration} Stunden**\nGewinner: **{winners_count}**",
+            title="🎉 Giveaway aktiv!",
+            description=f"Preis: **{prize}**\nDauer: **{duration} Stunden**\nGewinner: **{winners_count}**\n\n👥 **Teilnehmer: 0**",
             color=discord.Color.purple()
         )
 
@@ -106,16 +240,21 @@ class Giveaway(commands.Cog):
         view = self.GiveawayView(self, 0)
         msg = await channel.send(embed=embed, view=view)
 
+        end_time = datetime.datetime.utcnow() + datetime.timedelta(hours=duration)
+        
         self.giveaways[msg.id] = {
             "channel": channel,
             "prize": prize,
             "host": ctx.author,
-            "end_time": datetime.datetime.utcnow() + datetime.timedelta(hours=duration),
+            "end_time": end_time,
             "winners_count": winners_count,
             "participants": []
         }
 
         view.msg_id = msg.id
+
+        # Speichere in Datenbank
+        await self.save_giveaway_to_db(msg.id, channel, prize, ctx.author, end_time, winners_count, [])
 
         await ctx.respond("Giveaway gestartet!", ephemeral=True)
 
@@ -143,6 +282,7 @@ class Giveaway(commands.Cog):
 
             await channel.send(embed=embed)
             del self.giveaways[msg_id]
+            await self.delete_giveaway_from_db(msg_id)
             return
 
         weighted = []
@@ -170,6 +310,7 @@ class Giveaway(commands.Cog):
         await channel.send(embed=embed)
 
         del self.giveaways[msg_id]
+        await self.delete_giveaway_from_db(msg_id)
 
 
     
@@ -297,65 +438,56 @@ class Giveaway(commands.Cog):
 
         embed = discord.Embed(
             title="Bot Hilfe",
-            description="Hier sind alle Infos zu meinem System 👇",
+            description="Alle verfügbaren Commands und Infos",
             color=discord.Color.purple()
         )
 
-        
         embed.add_field(
-            name="📜 Commands",
+            name="📈 Level",
             value=(
-                "**/level** → Zeigt dein Level & XP\n"
-                "**/leaderboard** → Gesamt XP Ranking\n"
-                "**/leaderboard_messages** → Nachrichten Ranking\n"
-                "**/leaderboard_voice** → Voice Ranking\n"
-                "\n🎁 **Giveaway Commands:**\n"
-                "**/giveaway_start** → Giveaway starten\n"
-                "**/giveaway_reroll** → Gewinner neu auswählen\n"
-                "**/giveaway_end** → Giveaway beenden"
+                "/level → Dein Level & XP\n"
+                "/leaderboard → Gesamt XP Ranking\n"
+                "/leaderboard_messages → Nachrichten Ranking\n"
+                "/leaderboard_voice → Voice Ranking"
             ),
             inline=False
         )
 
-        
+        embed.add_field(
+            name="🎉 Giveaway",
+            value=(
+                "/giveaway_start → Giveaway starten\n"
+                "/giveaway_reroll → Gewinner neu auswählen\n"
+                "/giveaway_end → Giveaway manuell beenden"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🎣 Angeln",
+            value=(
+                "/fish → Angeln gehen (30s Cooldown)\n"
+                "/meine_fische → Deine gefangenen Fische + Statistiken\n"
+                "/fishing_leaderboard → Top 10 Angler\n"
+                "/fische_verkaufen → Alle Fische verkaufen"
+            ),
+            inline=False
+        )
+
         embed.add_field(
             name="⚡ XP System",
             value=(
-                "**💬 Nachrichten:**\n"
-                "• 1 - 3 XP pro Nachricht\n"
-                "• Cooldown: 20 Sekunden\n\n"
-                "**🎤 Voice Chat:**\n"
-                "• Alleine: 1 XP / Minute\n"
-                "• Mit anderen: 3 XP / Minute\n"
-                "• Gemutet: weniger XP\n"
-                "• Deaf: 0 XP\n\n"
-                "**🚀 Booster Rollen:**\n"
-                "• Bestimmte Rollen geben XP-Multiplikatoren (z.B. 1.5x, 1.75x, 2x, 1.25x)\n"
-                "• Booster können gestapelt werden, wenn aktiviert (Admin: /toggle_booster_stack)\n"
-                "• Standard: Nur der höchste Booster zählt\n"
-                "• User mit ID 1340370441390522398 erhalten keinen Booster\n"
+                "Nachrichten: 1–3 XP (Cooldown: 20s)\n"
+                "Voice alleine: 1 XP/Min | Mit anderen: 3 XP/Min\n"
+                "Gemutet: weniger XP | Deaf: 0 XP\n"
+                "Booster-Rollen geben XP-Multiplikatoren"
             ),
             inline=False
         )
 
-        
         embed.add_field(
-            name="📈 Level System",
-            value=(
-                "• Alle 100 XP = 1 Level\n"
-                "• Du bekommst Rollen bei bestimmten Leveln\n"
-                "• Level-Up wird im Server gepostet"
-            ),
-            inline=False
-        )
-
-        
-        embed.add_field(
-            name="👑 Bot Info",
-            value=(
-                "**Erstellt von:** Silky\n"
-                "Custom Discord Bot 💜"
-            ),
+            name="ℹ️ Bot Info",
+            value="Erstellt von: Silky mit hilfe von Otter",
             inline=False
         )
 
@@ -365,4 +497,8 @@ class Giveaway(commands.Cog):
         await ctx.respond(embed=embed)
 
 def setup(bot):
-    bot.add_cog(Giveaway(bot))
+    cog = Giveaway(bot)
+    bot.add_cog(cog)
+    # Initialisiere Datenbank und lade gespeicherte Giveaways
+    asyncio.create_task(cog.setup_database())
+    asyncio.create_task(cog.load_giveaways())

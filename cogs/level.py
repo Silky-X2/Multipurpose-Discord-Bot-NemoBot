@@ -80,7 +80,7 @@ class LevelSystem(commands.Cog):
 
     # XP Boost roles (placeholder IDs)
     XP_BOOST_ROLES = {
-        111111111111111111: 1.50,  # 1.50x boost
+        1365793303429382154: 1.20,  # Server Booster
         222222222222222222: 1.75,  # 1.75x boost
         333333333333333333: 2.00,  # 2.00x boost
         444444444444444444: 1.25,  # 1.25x boost
