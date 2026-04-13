@@ -43,7 +43,10 @@ async def level(self, ctx, user: Optional[discord.Member] = None):
 
 
 class LevelSystem(commands.Cog):
-    XP_GROWTH = 1.175  # 17.5% growth per level
+    # Balanced leveling: moderate start, steady linear growth per level
+    # XP needed to go from level `L` to `L+1` = XP_BASE + XP_SCALE * L
+    XP_BASE = 55
+    XP_SCALE = 10
 
     async def recalculate_all_levels(self, channel=None):
         """
@@ -51,24 +54,28 @@ class LevelSystem(commands.Cog):
         Optionally send progress to a Discord channel.
         """
         async with aiosqlite.connect(self.DB) as db:
-            # Add remain_xp column if not present
-            try:
-                await db.execute("ALTER TABLE users ADD COLUMN remain_xp INTEGER DEFAULT 0")
-                await db.commit()
-            except Exception:
-                pass
-            async with db.execute("SELECT user_id, xp, level, remain_xp FROM users") as cursor:
+            await self.ensure_progress_columns(db)
+            async with db.execute("SELECT user_id, xp FROM users") as cursor:
                 users = await cursor.fetchall()
             updated = 0
-            for user_id, xp, old_level, old_remain in users:
-                lvl, remain_xp, xp_needed = self.get_level_data(xp, self.XP_GROWTH)
-                await db.execute("UPDATE users SET level = ?, remain_xp = ? WHERE user_id = ?", (lvl, remain_xp, user_id))
-                await db.commit()
+            for user_id, xp in users:
+                lvl, xp_current, xp_needed = self.get_level_data(float(xp or 0))
+                remaining_xp = xp_needed - xp_current
+                await db.execute(
+                    "UPDATE users SET level = ?, remaining_xp = ? WHERE user_id = ?",
+                    (lvl, remaining_xp, user_id)
+                )
+                if self.has_legacy_remain_xp:
+                    await db.execute(
+                        "UPDATE users SET remain_xp = ? WHERE user_id = ?",
+                        (remaining_xp, user_id)
+                    )
                 updated += 1
                 if channel and updated % 25 == 0:
                     await channel.send(f"{updated} Nutzer recalculated...")
+            await db.commit()
             if channel:
-                await channel.send(f"Recalculation abgeschlossen für {updated} Nutzer. (Level werden dynamisch aus XP berechnet)")
+                await channel.send(f"Recalculation abgeschlossen für {updated} Nutzer. (Level und remaining_xp wurden aktualisiert)")
         return updated
 
     # XP Boost roles (placeholder IDs)
@@ -113,11 +120,15 @@ class LevelSystem(commands.Cog):
                     if role.id in self.XP_BOOST_ROLES:
                         boost = max(boost, self.XP_BOOST_ROLES[role.id])
             xp = xp * boost
-        await self.add_xp(user.id, xp)
+        old_level, new_level = await self.add_xp(user.id, xp)
+        if member:
+            await self.check_level_up(member, old_level, new_level)
 
     def __init__(self, bot):
         self.bot = bot
         self.DB = "level.db"
+        self.has_legacy_remain_xp = False
+        self.progress_initialized = False
 
         # COOLDOWN
         self.cooldowns = {}
@@ -139,51 +150,54 @@ class LevelSystem(commands.Cog):
         # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of their name!
         self.level_channel = 1482463203966455818
 
-    # Level Calculation, start at level 0, need 10 XP for level 1, then every level needs 17.5% more XP than the previous.
-    @staticmethod
-    def get_level_data(xp, growth=1.175):
-        import math
+    # Level Calculation using linear per-level increment for smooth progression.
+    @classmethod
+    def get_level_data(cls, xp):
         lvl = 0
-        current_lvl_xp = 10
-        while xp >= current_lvl_xp:
-            xp -= current_lvl_xp
+        xp = float(xp or 0)
+        xp_for_next = float(cls.XP_BASE + cls.XP_SCALE * lvl)
+        while xp >= xp_for_next:
+            xp -= xp_for_next
             lvl += 1
-            current_lvl_xp = math.ceil(current_lvl_xp * growth)
-        return lvl, xp, current_lvl_xp
-    @slash_command(name="level", description="Zeigt dein Level und Fortschritt")
-    async def level(self, ctx, user: Optional[discord.Member] = None):
-        member = user or ctx.author
-        # Fetch XP, level, and remain_xp from the database
-        async with aiosqlite.connect(self.DB) as db:
-            async with db.execute("SELECT xp, level, remain_xp FROM users WHERE user_id = ?", (member.id,)) as cursor:
-                result = await cursor.fetchone()
-                if result:
-                    xp_total, lvl, xp_current = result
-                else:
-                    xp_total, lvl, xp_current = 0, 0, 0
+            xp_for_next = float(cls.XP_BASE + cls.XP_SCALE * lvl)
+        return lvl, xp, xp_for_next
 
-        # Calculate the XP needed for the user's current level
-        import math
-        base_xp = 10
-        xp_needed = base_xp
-        for i in range(lvl):
-            xp_needed = math.ceil(xp_needed * self.XP_GROWTH)
-        progress_bar_length = 10
-        filled_slots = int(xp_current / xp_needed * progress_bar_length) if xp_needed else 0
-        bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
+    def get_xp_needed_for_level(self, lvl):
+        # XP needed to progress from `lvl` to `lvl+1`.
+        return float(self.XP_BASE + self.XP_SCALE * int(lvl))
 
-        def fmt(x):
-            return f"{x:.1f}" if isinstance(x, float) else str(x)
+    async def ensure_progress_columns(self, db):
+        async with db.execute("PRAGMA table_info(users)") as cursor:
+            table_info = await cursor.fetchall()
 
-        embed = discord.Embed(
-            title=f"Level Status für {member.display_name}",
-            color=discord.Color.purple()
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
-        embed.add_field(name="Gesamt XP", value=f"📈 **{fmt(xp_total)}**", inline=True)
-        embed.add_field(name="Fortschritt", value=f"{bar} ({fmt(xp_current)}/{fmt(xp_needed)})", inline=False)
-        await ctx.respond(embed=embed)
+        columns = {row[1] for row in table_info}
+
+        if "level" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN level INTEGER DEFAULT 0")
+            columns.add("level")
+
+        if "remaining_xp" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN remaining_xp REAL DEFAULT 10")
+            columns.add("remaining_xp")
+
+        self.has_legacy_remain_xp = "remain_xp" in columns
+        if self.has_legacy_remain_xp:
+            await db.execute(
+                """
+                UPDATE users
+                SET remaining_xp = CASE
+                    WHEN remaining_xp IS NULL OR remaining_xp <= 0 THEN remain_xp
+                    ELSE remaining_xp
+                END
+                """
+            )
+
+    def normalize_progress(self, xp_total, lvl, remaining_xp):
+        xp_total = float(xp_total or 0)
+        if lvl is None or remaining_xp is None or float(remaining_xp) <= 0:
+            calc_lvl, xp_current, xp_needed = self.get_level_data(xp_total)
+            return xp_total, int(calc_lvl), float(xp_needed - xp_current)
+        return xp_total, int(lvl), float(remaining_xp)
 
     # DATABASE
     @commands.Cog.listener()
@@ -195,16 +209,16 @@ class LevelSystem(commands.Cog):
                 msg_count INTEGER DEFAULT 0,
                 voice_time INTEGER DEFAULT 0,
                 xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 0
+                level INTEGER DEFAULT 0,
+                remaining_xp REAL DEFAULT 10
             )
             """)
-            # Try to add the level column if it doesn't exist (safe migration)
-            try:
-                await db.execute("ALTER TABLE users ADD COLUMN level INTEGER DEFAULT 0")
-                await db.commit()
-            except Exception:
-                pass  # Ignore if already exists
+            await self.ensure_progress_columns(db)
             await db.commit()
+
+        if not self.progress_initialized:
+            await self.recalculate_all_levels()
+            self.progress_initialized = True
 
         
         if not hasattr(self, 'voice_xp_task_running'):
@@ -236,19 +250,46 @@ class LevelSystem(commands.Cog):
     # XP ADD
     async def add_xp(self, user_id, xp):
         await self.check_user(user_id)
+        gained_xp = float(xp)
+
         async with aiosqlite.connect(self.DB) as db:
+            await self.ensure_progress_columns(db)
+            async with db.execute(
+                "SELECT xp, level, remaining_xp FROM users WHERE user_id = ?",
+                (user_id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if result:
+                xp_total, lvl, remaining_xp = self.normalize_progress(result[0], result[1], result[2])
+            else:
+                xp_total, lvl, remaining_xp = 0.0, 0, float(self.get_xp_needed_for_level(0))
+
+            old_level = lvl
+            xp_total += gained_xp
+            remaining_xp -= gained_xp
+
+            while remaining_xp <= 0:
+                lvl += 1
+                remaining_xp += self.get_xp_needed_for_level(lvl)
+
             await db.execute(
-                "UPDATE users SET xp = xp + ? WHERE user_id = ?",
-                (xp, user_id)
+                "UPDATE users SET xp = ?, level = ?, remaining_xp = ? WHERE user_id = ?",
+                (xp_total, lvl, remaining_xp, user_id)
             )
+            if self.has_legacy_remain_xp:
+                await db.execute(
+                    "UPDATE users SET remain_xp = ? WHERE user_id = ?",
+                    (remaining_xp, user_id)
+                )
             await db.commit()
 
+        return old_level, lvl
+
     # LEVEL UP CHECK
-    async def check_level_up(self, member, gained_xp):
-        new_xp = await self.get_xp(member.id)
-        old_xp = new_xp - gained_xp
-        old_level = self.get_level(old_xp)
-        new_level = self.get_level(new_xp)
+    async def check_level_up(self, member, old_level, new_level):
+        if new_level <= old_level:
+            return
 
         for level in range(old_level + 1, new_level + 1):
             channel = self.bot.get_channel(self.level_channel)
@@ -302,7 +343,7 @@ class LevelSystem(commands.Cog):
                         boost = max(boost, self.XP_BOOST_ROLES[role.id])
             xp = int(xp * boost)
 
-        await self.add_xp(message.author.id, xp)
+        old_level, new_level = await self.add_xp(message.author.id, xp)
 
         async with aiosqlite.connect(self.DB) as db:
             await db.execute(
@@ -311,7 +352,7 @@ class LevelSystem(commands.Cog):
             )
             await db.commit()
 
-        await self.check_level_up(message.author, xp)
+        await self.check_level_up(message.author, old_level, new_level)
 
     # VOICE XP
     @tasks.loop(minutes=1)
@@ -345,7 +386,7 @@ class LevelSystem(commands.Cog):
                                 if role.id in self.XP_BOOST_ROLES:
                                     boost = max(boost, self.XP_BOOST_ROLES[role.id])
                     xp = int(xp * boost)
-                    await self.add_xp(member.id, xp)
+                    old_level, new_level = await self.add_xp(member.id, xp)
 
                     async with aiosqlite.connect(self.DB) as db:
                         await db.execute(
@@ -354,7 +395,7 @@ class LevelSystem(commands.Cog):
                         )
                         await db.commit()
 
-                    await self.check_level_up(member, xp)
+                    await self.check_level_up(member, old_level, new_level)
 
     # To toggle stacking, set booster_stack_enabled above to True or False in code.
 
@@ -363,11 +404,38 @@ class LevelSystem(commands.Cog):
     @slash_command(name="level", description="Zeigt dein Level und Fortschritt")
     async def level(self, ctx, user: Optional[discord.Member]= None):
         member = user or ctx.author
-        xp_total = await self.get_xp(member.id)
-        lvl, xp_current, xp_needed = self.get_level_data(xp_total)
-        percentage = (xp_current / xp_needed) * 100
+        await self.check_user(member.id)
+        async with aiosqlite.connect(self.DB) as db:
+            await self.ensure_progress_columns(db)
+            async with db.execute(
+                "SELECT xp, level, remaining_xp FROM users WHERE user_id = ?",
+                (member.id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if result:
+                xp_total, lvl, remaining_xp = self.normalize_progress(result[0], result[1], result[2])
+            else:
+                xp_total, lvl, remaining_xp = 0.0, 0, float(self.get_xp_needed_for_level(0))
+
+            xp_needed = self.get_xp_needed_for_level(lvl)
+            xp_current = max(0.0, xp_needed - remaining_xp)
+
+            await db.execute(
+                "UPDATE users SET level = ?, remaining_xp = ? WHERE user_id = ?",
+                (lvl, remaining_xp, member.id)
+            )
+            if self.has_legacy_remain_xp:
+                await db.execute(
+                    "UPDATE users SET remain_xp = ? WHERE user_id = ?",
+                    (remaining_xp, member.id)
+                )
+            await db.commit()
+
+        percentage = (xp_current / xp_needed) * 100 if xp_needed else 0
         progress_bar_length = 10
-        filled_slots = int(xp_current / xp_needed * progress_bar_length)
+        filled_slots = int(xp_current / xp_needed * progress_bar_length) if xp_needed else 0
+        filled_slots = max(0, min(progress_bar_length, filled_slots))
         bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
 
         # Format XP values to one decimal place if needed
@@ -393,7 +461,7 @@ class LevelSystem(commands.Cog):
 
 
 
-    @slash_command(name="leaderboard", description="Show interactive leaderboard")
+    @slash_command(name="leaderboard", description="Show the leaderboard")
     async def leaderboard(self, ctx):
         view = self.LeaderboardView(self)
         await view.send_initial(ctx)
@@ -407,48 +475,63 @@ class LevelSystem(commands.Cog):
 
             self.level_btn = Button(label="Level", style=discord.ButtonStyle.primary)
             self.level_btn.callback = self.level_button
-            self.add_item(self.level_btn)
 
             self.messages_btn = Button(label="Messages", style=discord.ButtonStyle.secondary)
             self.messages_btn.callback = self.messages_button
-            self.add_item(self.messages_btn)
 
             self.voice_btn = Button(label="Voice", style=discord.ButtonStyle.secondary)
             self.voice_btn.callback = self.voice_button
-            self.add_item(self.voice_btn)
 
             self.toggle_btn = Button(label="Toggle Level/XP", style=discord.ButtonStyle.success)
             self.toggle_btn.callback = self.toggle_level_xp
-            self.add_item(self.toggle_btn)
+            self.update_buttons()
+
+        def update_buttons(self):
+            self.level_btn.style = discord.ButtonStyle.primary if self.mode == "level" else discord.ButtonStyle.secondary
+            self.messages_btn.style = discord.ButtonStyle.primary if self.mode == "messages" else discord.ButtonStyle.secondary
+            self.voice_btn.style = discord.ButtonStyle.primary if self.mode == "voice" else discord.ButtonStyle.secondary
+            self.toggle_btn.label = "Show Total XP" if self.level_display == "level" else "Show Level"
+
+            self.clear_items()
+            self.add_item(self.level_btn)
+            self.add_item(self.messages_btn)
+            self.add_item(self.voice_btn)
+            if self.mode == "level":
+                self.add_item(self.toggle_btn)
 
         async def send_initial(self, ctx):
             embed = await self.get_embed()
+            self.update_buttons()
             await ctx.respond(embed=embed, view=self)
 
         async def interaction_check(self, interaction: Interaction) -> bool:
             return True
 
-        async def level_button(self, interaction):
+        async def level_button(self, interaction: Interaction):
             self.mode = "level"
             embed = await self.get_embed()
+            self.update_buttons()
             await interaction.response.edit_message(embed=embed, view=self)
 
-        async def messages_button(self, interaction):
+        async def messages_button(self, interaction: Interaction):
             self.mode = "messages"
             embed = await self.get_embed()
+            self.update_buttons()
             await interaction.response.edit_message(embed=embed, view=self)
 
-        async def voice_button(self, interaction):
+        async def voice_button(self, interaction: Interaction):
             self.mode = "voice"
             embed = await self.get_embed()
+            self.update_buttons()
             await interaction.response.edit_message(embed=embed, view=self)
 
-        async def toggle_level_xp(self, interaction):
+        async def toggle_level_xp(self, interaction: Interaction):
             if self.level_display == "level":
                 self.level_display = "total_xp"
             else:
                 self.level_display = "level"
             embed = await self.get_embed()
+            self.update_buttons()
             await interaction.response.edit_message(embed=embed, view=self)
 
         async def get_embed(self):
@@ -462,18 +545,21 @@ class LevelSystem(commands.Cog):
         async def get_level_embed(self):
             desc = ""
             async with aiosqlite.connect(self.cog.DB) as db:
-                async with db.execute("SELECT user_id, xp FROM users ORDER BY xp DESC LIMIT 10") as cursor:
-                    i = 1
-                    async for user_id, xp in cursor:
-                        lvl, _, _ = self.cog.get_level_data(xp)
-                        if self.level_display == "level":
-                            desc += f"{i}. <@{user_id}> Level {lvl}\n"
-                        else:
-                            desc += f"{i}. <@{user_id}> Total XP: {xp}\n"
-                        i += 1
+                if self.level_display == "level":
+                    async with db.execute("SELECT user_id, level, xp FROM users ORDER BY level DESC, xp DESC LIMIT 10") as cursor:
+                        i = 1
+                        async for user_id, lvl, xp in cursor:
+                            desc += f"{i}. <@{user_id}> Level {int(lvl)}\n"
+                            i += 1
+                else:
+                    async with db.execute("SELECT user_id, xp, level FROM users ORDER BY xp DESC LIMIT 10") as cursor:
+                        i = 1
+                        async for user_id, xp, lvl in cursor:
+                            desc += f"{i}. <@{user_id}> XP: {int(float(xp))}\n"
+                            i += 1
             embed = discord.Embed(
                 title="🏆 Level Leaderboard",
-                description=desc,
+                description=desc or "Noch keine Daten verfügbar.",
                 color=discord.Color.purple()
             )
             return embed

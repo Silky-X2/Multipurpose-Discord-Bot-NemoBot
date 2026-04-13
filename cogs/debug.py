@@ -38,7 +38,15 @@ class Debug(commands.Cog):
             await message.channel.send("Level werden neu berechnet ...")
             level_cog = self.bot.get_cog("LevelSystem")
             if level_cog:
-                await level_cog.recalculate_all_levels(channel=message.channel)
+                try:
+                    await level_cog.recalculate_all_levels(channel=message.channel)
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    # Truncate traceback to avoid exceeding Discord message limits
+                    if len(tb) > 1900:
+                        tb = tb[-1900:]
+                    await message.channel.send(f"Fehler beim Neuberechnen:\n```py\n{tb}\n```")
             else:
                 await message.channel.send("LevelSystem Cog nicht gefunden!")
         # elif cmd == "restart":
