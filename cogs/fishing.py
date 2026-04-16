@@ -358,4 +358,4 @@ class Fishing(commands.Cog):
 def setup(bot):
     cog = Fishing(bot)
     bot.add_cog(cog)
-    asyncio.create_task(cog.setup_database())
+    asyncio.get_event_loop().create_task(cog.setup_database())

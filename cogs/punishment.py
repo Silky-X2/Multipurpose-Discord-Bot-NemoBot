@@ -1,11 +1,10 @@
 import discord
 from discord.ext import commands, tasks
-from discord.commands import slash_command
+from discord.commands import slash_command, Option
 import aiosqlite
 import asyncio
 import datetime
 import os
-
 
 class punishment(commands.Cog):
 
@@ -346,4 +345,4 @@ class punishment(commands.Cog):
 def setup(bot):
 	cog = punishment(bot)
 	bot.add_cog(cog)
-	asyncio.create_task(cog.setup_database())
+	asyncio.get_event_loop().create_task(cog.setup_database())

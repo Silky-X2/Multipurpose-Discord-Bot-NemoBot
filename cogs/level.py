@@ -216,9 +216,10 @@ class LevelSystem(commands.Cog):
             await self.ensure_progress_columns(db)
             await db.commit()
 
-        if not self.progress_initialized:
-            await self.recalculate_all_levels()
-            self.progress_initialized = True
+        # Uncomment the following lines to recalculate all levels on bot startup
+        # if not self.progress_initialized:
+        #    await self.recalculate_all_levels()
+        #    self.progress_initialized = True
 
         
         if not hasattr(self, 'voice_xp_task_running'):

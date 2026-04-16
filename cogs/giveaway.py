@@ -92,7 +92,7 @@ class Giveaway(commands.Cog):
                         # Starte Timer für dieses Giveaway
                         time_left = (end_time_obj - datetime.datetime.utcnow()).total_seconds()
                         if time_left > 0:
-                            asyncio.create_task(self.giveaway_timer(msg_id, time_left))
+                            asyncio.get_event_loop().create_task(self.giveaway_timer(msg_id, time_left))
                     except Exception as e:
                         print(f"Fehler beim Laden von Giveaway {msg_id}: {e}")
 
@@ -500,5 +500,5 @@ def setup(bot):
     cog = Giveaway(bot)
     bot.add_cog(cog)
     # Initialisiere Datenbank und lade gespeicherte Giveaways
-    asyncio.create_task(cog.setup_database())
-    asyncio.create_task(cog.load_giveaways())
+    asyncio.get_event_loop().create_task(cog.setup_database())
+    asyncio.get_event_loop().create_task(cog.load_giveaways())
