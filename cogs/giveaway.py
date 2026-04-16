@@ -8,6 +8,8 @@ import aiosqlite
 import json
 import os
 
+from utils.time_parser import format_duration, parse_duration_to_seconds
+
 
 class Giveaway(commands.Cog):
 
@@ -137,10 +139,20 @@ class Giveaway(commands.Cog):
         try:
             msg = await channel.fetch_message(msg_id)
             participants_count = len(data["participants"])
+            remaining_seconds = max(
+                0,
+                int((data["end_time"] - datetime.datetime.utcnow()).total_seconds())
+            )
+            readable_remaining = format_duration(remaining_seconds)
             
             embed = discord.Embed(
                 title="🎉 Giveaway aktiv!",
-                description=f"Preis: **{data['prize']}**\nDauer: **{data['end_time']}**\nGewinner: **{data['winners_count']}**\n\n**Teilnehmer: {participants_count}**",
+                description=(
+                    f"Preis: **{data['prize']}**\n"
+                    f"Verbleibend: **{readable_remaining}**\n"
+                    f"Gewinner: **{data['winners_count']}**\n\n"
+                    f"**Teilnehmer: {participants_count}**"
+                ),
                 color=discord.Color.purple()
             )
             embed.set_footer(text=f"Von {data['host'].name}")
@@ -220,7 +232,7 @@ class Giveaway(commands.Cog):
         self,
         ctx,
         prize: Option(str, "Preis"),
-        duration: Option(int, "Dauer in Stunden"),
+        duration: Option(str, "Dauer (z.B. 1d 2m 5min)"),
         winners_count: Option(int, "Gewinner Anzahl"),
         channel: Option(discord.abc.GuildChannel, "Channel")
     ):
@@ -229,9 +241,30 @@ class Giveaway(commands.Cog):
             await ctx.respond("❌ Keine Berechtigung!", ephemeral=True)
             return
 
+        try:
+            duration_seconds = parse_duration_to_seconds(duration)
+        except ValueError as exc:
+            await ctx.respond(
+                "❌ Ungueltige Dauer. Beispiele: `30min`, `2h`, `1d 2m 5min`.\n"
+                f"Details: {exc}",
+                ephemeral=True
+            )
+            return
+
+        if winners_count < 1:
+            await ctx.respond("❌ Gewinner Anzahl muss mindestens 1 sein.", ephemeral=True)
+            return
+
+        readable_duration = format_duration(duration_seconds)
+
         embed = discord.Embed(
             title="🎉 Giveaway aktiv!",
-            description=f"Preis: **{prize}**\nDauer: **{duration} Stunden**\nGewinner: **{winners_count}**\n\n👥 **Teilnehmer: 0**",
+            description=(
+                f"Preis: **{prize}**\n"
+                f"Dauer: **{readable_duration}**\n"
+                f"Gewinner: **{winners_count}**\n\n"
+                "👥 **Teilnehmer: 0**"
+            ),
             color=discord.Color.purple()
         )
 
@@ -240,7 +273,7 @@ class Giveaway(commands.Cog):
         view = self.GiveawayView(self, 0)
         msg = await channel.send(embed=embed, view=view)
 
-        end_time = datetime.datetime.utcnow() + datetime.timedelta(hours=duration)
+        end_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=duration_seconds)
         
         self.giveaways[msg.id] = {
             "channel": channel,
@@ -258,8 +291,7 @@ class Giveaway(commands.Cog):
 
         await ctx.respond("Giveaway gestartet!", ephemeral=True)
 
-        await asyncio.sleep(duration * 3600)
-        await self.end_giveaway(msg.id)
+        asyncio.get_event_loop().create_task(self.giveaway_timer(msg.id, duration_seconds))
 
 
     

@@ -1,4 +1,5 @@
-from asyncio import wait
+from datetime import datetime
+from io import BytesIO
 
 import discord
 from discord.ext import commands, tasks
@@ -6,9 +7,11 @@ from discord.commands import slash_command
 from discord.ui import View, Button
 from discord import Interaction
 import aiosqlite
+import os
 import random
 import time
 from typing import Optional
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 
@@ -121,8 +124,18 @@ class LevelSystem(commands.Cog):
         # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of their name!
         self.level_channel = 1482463203966455818
 
+        self._font_candidates = {
+            "regular": [
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+            ],
+            "bold": [
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
+            ],
+        }
+
     # Level Calculation using linear per-level increment for smooth progression.
-    @classmethod
     @classmethod
     def get_level_data(cls, xp):
         # Closed-form solution for arithmetic progression: XP needed for level L is XP_BASE + XP_SCALE * L
@@ -148,6 +161,183 @@ class LevelSystem(commands.Cog):
     def get_xp_needed_for_level(self, lvl):
         # XP needed to progress from `lvl` to `lvl+1`.
         return float(self.XP_BASE + self.XP_SCALE * int(lvl))
+
+    @classmethod
+    def get_total_xp_for_level(cls, lvl: int) -> float:
+        lvl = max(0, int(lvl))
+        return float(cls.XP_BASE * lvl + cls.XP_SCALE * (lvl * (lvl - 1)) / 2)
+
+    def _set_formula_runtime(self, xp_base: float, xp_scale: float):
+        type(self).XP_BASE = float(xp_base)
+        type(self).XP_SCALE = float(xp_scale)
+
+    async def ensure_settings_table(self, db):
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS level_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                xp_base REAL NOT NULL,
+                xp_scale REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO level_settings (id, xp_base, xp_scale, updated_at)
+            VALUES (1, ?, ?, ?)
+            """,
+            (float(self.XP_BASE), float(self.XP_SCALE), datetime.utcnow().isoformat())
+        )
+
+    async def load_formula_settings(self, db):
+        async with db.execute(
+            "SELECT xp_base, xp_scale FROM level_settings WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row:
+            self._set_formula_runtime(row[0], row[1])
+
+    async def get_level_formula(self):
+        async with aiosqlite.connect(self.DB) as db:
+            await self.ensure_settings_table(db)
+            await self.load_formula_settings(db)
+            await db.commit()
+        return {"xp_base": float(self.XP_BASE), "xp_scale": float(self.XP_SCALE)}
+
+    async def update_level_formula(self, xp_base: float, xp_scale: float, recalculate: bool = False):
+        xp_base = float(xp_base)
+        xp_scale = float(xp_scale)
+
+        if xp_base <= 0:
+            raise ValueError("xp_base must be greater than 0")
+        if xp_scale < 0:
+            raise ValueError("xp_scale must be at least 0")
+
+        self._set_formula_runtime(xp_base, xp_scale)
+
+        async with aiosqlite.connect(self.DB) as db:
+            await self.ensure_settings_table(db)
+            await db.execute(
+                """
+                UPDATE level_settings
+                SET xp_base = ?, xp_scale = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (xp_base, xp_scale, datetime.utcnow().isoformat())
+            )
+            await db.commit()
+
+        if recalculate:
+            await self.recalculate_all_levels()
+
+    def _load_font(self, size: int, bold: bool = False):
+        key = "bold" if bold else "regular"
+        for path in self._font_candidates[key]:
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    def _format_xp(self, value):
+        value = float(value or 0)
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.1f}"
+
+    async def render_level_card(self, member, lvl, xp_total, xp_current, xp_needed):
+        width, height = 1000, 320
+        background_path = os.getenv("LEVEL_CARD_BACKGROUND", "assets/level_card_bg.png")
+        image = Image.new("RGBA", (width, height), (12, 18, 34, 255))
+
+        if os.path.exists(background_path):
+            try:
+                bg = Image.open(background_path).convert("RGBA")
+                image = ImageOps.fit(bg, (width, height), method=getattr(getattr(Image, "Resampling", Image), "LANCZOS"))
+            except Exception:
+                pass
+
+        draw = ImageDraw.Draw(image)
+
+        # Soft horizontal gradient overlay for readability regardless of background image.
+        for x in range(width):
+            ratio = x / (width - 1)
+            alpha = int(125 + 70 * ratio)
+            draw.line([(x, 0), (x, height)], fill=(8, 14, 28, alpha))
+
+        draw.rounded_rectangle(
+            (18, 18, width - 18, height - 18),
+            radius=32,
+            fill=(9, 14, 26, 220),
+            outline=(111, 152, 235, 180),
+            width=2,
+        )
+
+        avatar_size = 180
+        avatar_pos = (48, 70)
+        avatar_image = Image.new("RGBA", (avatar_size, avatar_size), (90, 98, 120, 255))
+
+        try:
+            avatar_asset = member.display_avatar.with_size(256)
+            avatar_bytes = await avatar_asset.read()
+            raw_avatar = Image.open(BytesIO(avatar_bytes)).convert("RGBA")
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            avatar_image = ImageOps.fit(raw_avatar, (avatar_size, avatar_size), method=resampling)
+        except Exception:
+            pass
+
+        mask = Image.new("L", (avatar_size, avatar_size), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+        image.paste(avatar_image, avatar_pos, mask)
+
+        arc_box = (
+            avatar_pos[0] - 6,
+            avatar_pos[1] - 6,
+            avatar_pos[0] + avatar_size + 6,
+            avatar_pos[1] + avatar_size + 6,
+        )
+        draw.arc(arc_box, start=0, end=360, fill=(129, 178, 255, 255), width=4)
+
+        title_font = self._load_font(30, bold=True)
+        name_font = self._load_font(42, bold=True)
+        stats_font = self._load_font(26, bold=False)
+        progress_font = self._load_font(22, bold=True)
+
+        text_x = 270
+        draw.text((text_x, 50), "LEVEL CARD", font=title_font, fill=(152, 184, 255, 255))
+        draw.text((text_x, 90), member.display_name[:24], font=name_font, fill=(236, 243, 255, 255))
+
+        stats_line = (
+            f"Level {int(lvl)}   |   Total XP {self._format_xp(xp_total)}   |   "
+            f"Next Level {self._format_xp(xp_needed)} XP"
+        )
+        draw.text((text_x, 150), stats_line, font=stats_font, fill=(199, 214, 248, 255))
+
+        progress_ratio = 0 if xp_needed <= 0 else max(0.0, min(1.0, float(xp_current) / float(xp_needed)))
+        progress_percent = int(progress_ratio * 100)
+
+        bar_x1, bar_y1 = text_x, 210
+        bar_x2, bar_y2 = width - 60, 250
+        draw.rounded_rectangle((bar_x1, bar_y1, bar_x2, bar_y2), radius=16, fill=(32, 44, 69, 255))
+
+        fill_width = int((bar_x2 - bar_x1) * progress_ratio)
+        if fill_width > 0:
+            draw.rounded_rectangle(
+                (bar_x1, bar_y1, bar_x1 + fill_width, bar_y2),
+                radius=16,
+                fill=(72, 159, 255, 255),
+            )
+
+        progress_text = f"{self._format_xp(xp_current)} / {self._format_xp(xp_needed)} XP ({progress_percent}%)"
+        draw.text((text_x, 262), progress_text, font=progress_font, fill=(224, 236, 255, 255))
+
+        output = BytesIO()
+        image.save(output, format="PNG")
+        output.seek(0)
+        return output
 
     async def ensure_progress_columns(self, db):
         async with db.execute("PRAGMA table_info(users)") as cursor:
@@ -192,6 +382,9 @@ class LevelSystem(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         async with aiosqlite.connect(self.DB) as db:
+            await self.ensure_settings_table(db)
+            await self.load_formula_settings(db)
+
             default_remaining_xp = self.get_xp_needed_for_level(0)
             await db.execute(f"""
             CREATE TABLE IF NOT EXISTS users(
@@ -421,31 +614,37 @@ class LevelSystem(commands.Cog):
                 )
             await db.commit()
 
-        percentage = (xp_current / xp_needed) * 100 if xp_needed else 0
-        progress_bar_length = 10
-        filled_slots = int(xp_current / xp_needed * progress_bar_length) if xp_needed else 0
-        filled_slots = max(0, min(progress_bar_length, filled_slots))
-        bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
+        try:
+            image_buffer = await self.render_level_card(member, lvl, xp_total, xp_current, xp_needed)
+            file = discord.File(fp=image_buffer, filename=f"level_{member.id}.png")
+            embed = discord.Embed(
+                title=f"Level Status fuer {member.display_name}",
+                color=discord.Color.purple()
+            )
+            embed.set_image(url=f"attachment://{file.filename}")
+            await ctx.respond(embed=embed, file=file)
+        except Exception:
+            percentage = (xp_current / xp_needed) * 100 if xp_needed else 0
+            progress_bar_length = 10
+            filled_slots = int(xp_current / xp_needed * progress_bar_length) if xp_needed else 0
+            filled_slots = max(0, min(progress_bar_length, filled_slots))
+            bar = "🟦" * filled_slots + "⬜" * (progress_bar_length - filled_slots)
 
-        # Format XP values to one decimal place if needed
-        def fmt(x):
-            return f"{x:.1f}" if isinstance(x, float) and not x.is_integer() else str(int(x))
+            embed = discord.Embed(
+                title=f"Level Status fuer {member.display_name}",
+                color=discord.Color.purple()
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
 
-        embed = discord.Embed(
-            title=f"Level Status für {member.display_name}",
-            color=discord.Color.purple()
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        
-        embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
-        embed.add_field(name="Gesamt XP", value=f"📈 **{fmt(xp_total)}**", inline=True)
-        embed.add_field(
-            name=f"Fortschritt bis Level {lvl + 1}", 
-            value=f"{bar} ({int(percentage)}%)\n`{fmt(xp_current)} / {fmt(xp_needed)} XP`", 
-            inline=False
-        )
-        
-        await ctx.respond(embed=embed)
+            embed.add_field(name="Level", value=f"✨ **{lvl}**", inline=True)
+            embed.add_field(name="Gesamt XP", value=f"📈 **{self._format_xp(xp_total)}**", inline=True)
+            embed.add_field(
+                name=f"Fortschritt bis Level {lvl + 1}",
+                value=f"{bar} ({int(percentage)}%)\n`{self._format_xp(xp_current)} / {self._format_xp(xp_needed)} XP`",
+                inline=False
+            )
+
+            await ctx.respond(embed=embed)
 
 
 

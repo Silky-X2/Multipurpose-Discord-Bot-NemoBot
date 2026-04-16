@@ -8,12 +8,15 @@
 ## Features
 
 - **Leveling System:** Earn XP by sending messages, being active in voice, and reacting to messages.
+- **Fancy Level Card:** `/level` now returns an image-based rank card.
 - **Voice XP:** Gain XP for time spent in voice channels.
-- **Giveaways:** Run and manage server giveaways.
+- **Giveaways:** Run and manage server giveaways with flexible durations like `1d 2m 5min`.
 - **Leaderboards:** Interactive leaderboards for level, messages, and voice activity.
 - **Role Rewards:** Automatically assign roles at certain levels.
 - **XP Boosts:** Grant XP multipliers to users with specific roles.
 - **Reaction XP:** Earn XP for adding reactions (with cooldown).
+- **Temp Roles:** Grant temporary roles and auto-revoke them after the selected duration.
+- **Web Dashboard:** Token-protected dashboard for leaderboards, level formula, automod, bot settings, and restart.
 
 ---
 
@@ -37,6 +40,61 @@
 	 ```bash
 	 python bot.py
 	 ```
+
+### Optional Dashboard Environment Variables
+
+Add these to `.env` if you want the web dashboard enabled with secure tokens:
+
+```env
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_PORT=8080
+DASHBOARD_VIEW_TOKEN=change-this-view-token
+DASHBOARD_ADMIN_TOKEN=change-this-admin-token
+DASHBOARD_ENABLE_CONSOLE=false
+LEVEL_CARD_BACKGROUND=assets/level_card_bg.png
+```
+
+### Dashboard Access Guide
+
+The dashboard cog loads automatically when you run the bot (because every `.py` file in `cogs/` is loaded).
+
+1. Start the bot:
+	```bash
+	python bot.py
+	```
+2. Open the dashboard in your browser:
+	- Local machine: `http://127.0.0.1:8080/?token=<your-token>`
+	- Remote/VPS host: `http://<server-ip>:8080/?token=<your-token>`
+
+Use one of these tokens in `?token=`:
+- `DASHBOARD_VIEW_TOKEN`: read-only access
+- `DASHBOARD_ADMIN_TOKEN`: edit settings, restart bot, and use console (if enabled)
+
+If only one token is set, it is used for both roles. If no tokens are set, the bot falls back to `change-me` for both (change this immediately in production).
+
+#### Dashboard Pages
+
+- `/` Home
+- `/leaderboard` Leaderboard view
+- `/level-formula` Level curve preview and admin updates
+- `/automod` Automod settings per guild
+- `/settings` Presence settings and restart action
+- `/console` Host command runner (admin + `DASHBOARD_ENABLE_CONSOLE=true` only)
+
+#### Alternative Auth Method
+
+Instead of `?token=...`, you can send an HTTP header:
+
+`Authorization: Bearer <your-token>`
+
+#### Quick Troubleshooting
+
+- `401 Unauthorized`: missing/invalid token
+- `403 Admin permission required`: you opened an admin action with the viewer token
+- Dashboard not reachable: check `DASHBOARD_HOST`/`DASHBOARD_PORT`, firewall rules, and that the bot process is running
+- Port already in use: change `DASHBOARD_PORT` to another free port
+
+Security note: never share your admin token publicly.
 
 ---
 
@@ -69,6 +127,16 @@
 
 - Use the `/leaderboard` command to view the interactive leaderboard.
 - Toggle between Level, Message, and Voice leaderboards with buttons (see code for details).
+
+## New Commands
+
+- `/giveaway_start`
+	- Duration now supports mixed units: `30min`, `2h`, `1d 2m 5min`
+	- `m` is interpreted as month, `min` as minutes
+- `/temprole_add`
+	- Give a role with duration and auto-revoke
+- `/temprole_remove`
+	- Remove temporary role immediately
 
 ---
 
