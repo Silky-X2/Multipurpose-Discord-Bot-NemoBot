@@ -631,9 +631,14 @@ class LevelSystem(commands.Cog):
             return
         self.cooldowns[message.author.id] = now
 
-        xp = random.randint(1, 3)
+        # Scale XP with message length, but clamp it so very long messages cannot farm unlimited XP.
+        content_length = len((message.content or "").strip())
+        effective_length = min(content_length, 240)
+        xp = 0.8 + (effective_length / 120.0) + random.uniform(0.0, 0.6)
+        xp = min(xp, 3.0)
+
         if message.author.premium_since:
-            xp = int(xp * 1.1)
+            xp *= 1.1
 
         # XP Boost for roles (skip excluded user)
         if hasattr(message.author, 'roles') and message.author.id != 1340370441390522398:
@@ -646,7 +651,9 @@ class LevelSystem(commands.Cog):
                 for role in message.author.roles:
                     if role.id in self.XP_BOOST_ROLES:
                         boost = max(boost, self.XP_BOOST_ROLES[role.id])
-            xp = int(xp * boost)
+            xp *= boost
+
+        xp = min(xp, 5.0)
 
         old_level, new_level = await self.add_xp(message.author.id, xp)
 
@@ -671,26 +678,24 @@ class LevelSystem(commands.Cog):
                     if member.bot or member.voice.self_deaf or member.voice.deaf:
                         continue
 
-                    xp = 1 if len(members) == 1 else 3
+                    # Slight nerf to voice XP while keeping group calls more rewarding than solo.
+                    xp = 0.9 if len(members) == 1 else 2.6
                     if member.voice.self_mute or member.voice.mute:
-                        xp = int(xp * 0.2)
+                        xp *= 0.2
                     if member.premium_since:
-                        xp = int(xp * 1.1)
-                    if member.id == 1340370441390522398:
-                        xp = int(xp * 0.5)
+                        xp *= 1.1
 
-                    # XP Boost for roles (skip excluded user)
+                    # XP Boost for roles
                     boost = 1.0
-                    if member.id != 1340370441390522398:
-                        if self.booster_stack_enabled:
-                            for role in getattr(member, 'roles', []):
-                                if role.id in self.XP_BOOST_ROLES:
-                                    boost *= self.XP_BOOST_ROLES[role.id]
-                        else:
-                            for role in getattr(member, 'roles', []):
-                                if role.id in self.XP_BOOST_ROLES:
-                                    boost = max(boost, self.XP_BOOST_ROLES[role.id])
-                    xp = int(xp * boost)
+                    if self.booster_stack_enabled:
+                        for role in getattr(member, 'roles', []):
+                            if role.id in self.XP_BOOST_ROLES:
+                                boost *= self.XP_BOOST_ROLES[role.id]
+                    else:
+                        for role in getattr(member, 'roles', []):
+                            if role.id in self.XP_BOOST_ROLES:
+                                boost = max(boost, self.XP_BOOST_ROLES[role.id])
+                    xp *= boost
                     old_level, new_level = await self.add_xp(member.id, xp)
 
                     async with aiosqlite.connect(self.DB) as db:

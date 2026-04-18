@@ -44,26 +44,6 @@
 	  | `DASHBOARD_DEV_TOKEN`     | Passcode for `dev` dashboard login.                              |
 	  | `LEVEL_CARD_BACKGROUND`   | (Optional) Path to level card background image.                  |
 
-	  Example `.env`:
-	  ```env
-	  # Required bot token
-	  Token=YOUR_DISCORD_BOT_TOKEN
-
-	  # Dashboard host/port
-	  DASHBOARD_HOST=0.0.0.0
-	  DASHBOARD_PORT=8080
-
-	  # Dashboard login passcodes by username:
-	  # viewer -> DASHBOARD_VIEW_TOKEN
-	  # admin  -> DASHBOARD_ADMIN_TOKEN
-	  # dev    -> DASHBOARD_DEV_TOKEN
-	  DASHBOARD_VIEW_TOKEN=change-this-view-token
-	  DASHBOARD_ADMIN_TOKEN=change-this-admin-token
-	  DASHBOARD_DEV_TOKEN=change-this-dev-token
-
-	  # Optional assets
-	  LEVEL_CARD_BACKGROUND=assets/level_card_bg.png
-	  ```
 4. **Run the bot:**
 	 ```bash
 	 python bot.py

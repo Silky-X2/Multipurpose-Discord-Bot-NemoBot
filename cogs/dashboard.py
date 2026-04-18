@@ -2,7 +2,9 @@ import asyncio
 import html
 import os
 import re
+import secrets
 import sys
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -23,6 +25,7 @@ class Dashboard(commands.Cog):
 
         self.view_token = os.getenv("DASHBOARD_VIEW_TOKEN", "")
         self.admin_token = os.getenv("DASHBOARD_ADMIN_TOKEN", "")
+        self.dev_token = os.getenv("DASHBOARD_DEV_TOKEN", "")
         if self.admin_token and not self.view_token:
             self.view_token = self.admin_token
         if self.view_token and not self.admin_token:
@@ -32,6 +35,8 @@ class Dashboard(commands.Cog):
             # Safe default for first-time setup; should be changed in .env immediately.
             self.view_token = "change-me"
             self.admin_token = "change-me"
+        if not self.dev_token:
+            self.dev_token = "change-me-dev"
 
         self.console_enabled = os.getenv("DASHBOARD_ENABLE_CONSOLE", "false").lower() in {
             "1",
@@ -39,6 +44,9 @@ class Dashboard(commands.Cog):
             "yes",
             "on",
         }
+        self.session_cookie_name = "nemo_dashboard_session"
+        self.session_ttl_seconds = int(os.getenv("DASHBOARD_SESSION_TTL_SECONDS", "43200"))
+        self.sessions = {}
 
         self.automod_cache = {}
         self._startup_done = False
@@ -49,6 +57,9 @@ class Dashboard(commands.Cog):
         self.app.add_routes(
             [
                 web.get("/", self.home_page),
+                web.get("/login", self.login_page),
+                web.post("/login", self.login_submit),
+                web.post("/logout", self.logout_submit),
                 web.get("/leaderboard", self.leaderboard_page),
                 web.get("/level-formula", self.level_formula_page),
                 web.post("/level-formula", self.level_formula_update),
@@ -160,26 +171,67 @@ class Dashboard(commands.Cog):
             )
             await db.commit()
 
-    def _extract_token(self, request: web.Request):
-        token = request.query.get("token", "").strip()
-        if token:
-            return token
+    def _permission_rank(self, permission: str) -> int:
+        return {"viewer": 1, "admin": 2, "dev": 3}.get(permission, 0)
 
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            return auth_header[7:].strip()
+    def _permission_allows(self, permission: str, required_permission: str) -> bool:
+        return self._permission_rank(permission) >= self._permission_rank(required_permission)
 
-        return ""
-
-    def _permission_for_token(self, token: str):
-        if token and token == self.admin_token:
-            return "admin"
-        if token and token == self.view_token:
-            return "viewer"
+    def _permission_for_login(self, username: str, passcode: str):
+        normalized_username = (username or "").strip().lower()
+        expected_passcodes = {
+            "viewer": self.view_token,
+            "admin": self.admin_token,
+            "dev": self.dev_token,
+        }
+        expected = expected_passcodes.get(normalized_username, "")
+        if expected and passcode == expected:
+            return normalized_username
         return None
 
-    def _token_query(self, token: str):
-        return f"token={quote(token)}"
+    def _safe_next_path(self, raw_next: str) -> str:
+        next_path = (raw_next or "/").strip()
+        if not next_path.startswith("/"):
+            return "/"
+        if next_path.startswith("//"):
+            return "/"
+        if next_path.startswith("/login"):
+            return "/"
+        return next_path
+
+    def _prune_sessions(self):
+        now = time.time()
+        expired_session_ids = [
+            session_id
+            for session_id, (_, expires_at) in self.sessions.items()
+            if expires_at <= now
+        ]
+        for session_id in expired_session_ids:
+            self.sessions.pop(session_id, None)
+
+    def _create_session(self, permission: str) -> str:
+        self._prune_sessions()
+        session_id = secrets.token_urlsafe(32)
+        self.sessions[session_id] = (permission, time.time() + self.session_ttl_seconds)
+        return session_id
+
+    def _session_permission(self, request: web.Request):
+        self._prune_sessions()
+        session_id = request.cookies.get(self.session_cookie_name, "").strip()
+        if not session_id:
+            return None, None
+
+        session_data = self.sessions.get(session_id)
+        if not session_data:
+            return None, None
+
+        permission, _ = session_data
+        self.sessions[session_id] = (permission, time.time() + self.session_ttl_seconds)
+        return permission, session_id
+
+    def _destroy_session(self, session_id):
+        if session_id:
+            self.sessions.pop(session_id, None)
 
     def _form_text(self, post_data: Any, key: str, default: str = "") -> str:
         value = post_data.get(key, default)
@@ -191,25 +243,41 @@ class Dashboard(commands.Cog):
             return value.decode("utf-8", errors="replace")
         return str(value)
 
-    async def _authorize(self, request: web.Request, require_admin: bool = False):
-        token = self._extract_token(request)
-        permission = self._permission_for_token(token)
+    async def _authorize(self, request: web.Request, required_permission: str = "viewer"):
+        permission, _ = self._session_permission(request)
         if permission is None:
-            raise web.HTTPUnauthorized(text="Unauthorized. Use ?token=YOUR_TOKEN")
-        if require_admin and permission != "admin":
-            raise web.HTTPForbidden(text="Admin permission required")
-        return permission, token
+            next_path = quote(self._safe_next_path(request.rel_url.path_qs or "/"), safe="")
+            raise web.HTTPFound(location=f"/login?next={next_path}")
+        if not self._permission_allows(permission, required_permission):
+            raise web.HTTPForbidden(text=f"{required_permission.capitalize()} permission required")
+        return permission
 
-    def _layout(self, title: str, body: str, token: str, permission: str):
-        q = self._token_query(token)
+    def _layout(self, title: str, body: str, permission: str, show_header: bool = True):
         nav = (
-            f'<a href="/?{q}">Home</a>'
-            f'<a href="/leaderboard?{q}">Leaderboard</a>'
-            f'<a href="/level-formula?{q}">Level Formula</a>'
-            f'<a href="/automod?{q}">Automod</a>'
-            f'<a href="/settings?{q}">Bot Settings</a>'
-            f'<a href="/console?{q}">Console</a>'
+            '<a href="/">Home</a>'
+            '<a href="/leaderboard">Leaderboard</a>'
+            '<a href="/level-formula">Level Formula</a>'
+            '<a href="/automod">Automod</a>'
+            '<a href="/settings">Bot Settings</a>'
+            '<a href="/console">Console</a>'
         )
+        header_html = (
+            f"""
+    <div class="card">
+      <h1>{html.escape(title)}</h1>
+      <p>Permission: <strong>{html.escape(permission)}</strong></p>
+      <div class="topbar">
+        <nav>{nav}</nav>
+        <form class="logout-form" method="post" action="/logout">
+          <button type="submit">Logout</button>
+        </form>
+      </div>
+    </div>
+"""
+            if show_header
+            else ""
+        )
+
         return f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -250,7 +318,14 @@ class Dashboard(commands.Cog):
     }}
     h1, h2 {{ margin: 0 0 12px 0; letter-spacing: .2px; }}
     p, li, label {{ color: var(--muted); }}
-    nav {{ display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }}
+    .topbar {{
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+    }}
+    nav {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }}
     nav a {{
       color: var(--text);
       text-decoration: none;
@@ -277,6 +352,8 @@ class Dashboard(commands.Cog):
       font-weight: 600;
       cursor: pointer;
     }}
+    .logout-form {{ margin: 0; }}
+    .logout-form button {{ width: auto; margin: 0; padding: 8px 14px; }}
     .danger {{ background: linear-gradient(90deg, #be3f3f, #d95a5a); }}
     table {{ width: 100%; border-collapse: collapse; }}
     th, td {{ border-bottom: 1px solid #2f4063; padding: 10px; text-align: left; }}
@@ -293,35 +370,90 @@ class Dashboard(commands.Cog):
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <h1>{html.escape(title)}</h1>
-      <p>Permission: <strong>{html.escape(permission)}</strong></p>
-      <nav>{nav}</nav>
-    </div>
+    {header_html}
     {body}
   </div>
 </body>
 </html>
 """
+    async def login_page(self, request: web.Request):
+        permission, _ = self._session_permission(request)
+        if permission:
+            raise web.HTTPFound(location="/")
 
-    async def home_page(self, request: web.Request):
-        permission, token = await self._authorize(request)
+        next_path = self._safe_next_path(request.query.get("next", "/"))
+        error = request.query.get("error", "").strip()
+        error_html = f'<p class="error">{html.escape(error)}</p>' if error else ""
+
         body = f"""
 <div class="card">
-  <h2>NemoBot Dashboard</h2>
+  <h2>Dashboard Login</h2>
+  <p>Use your dashboard username and passcode.</p>
+  {error_html}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{html.escape(next_path)}" />
+    <label>Username</label>
+    <input type="text" name="username" placeholder="Username" required />
+    <label>Passcode</label>
+    <input type="password" name="passcode" placeholder="Passcode" required />
+    <button type="submit">Login</button>
+  </form>
+</div>
+"""
+        return web.Response(
+            text=self._layout("Dashboard Login", body, "guest", show_header=False),
+            content_type="text/html",
+        )
+
+    async def login_submit(self, request: web.Request):
+        data = await request.post()
+        username = self._form_text(data, "username", "")
+        passcode = self._form_text(data, "passcode", "")
+        next_path = self._safe_next_path(self._form_text(data, "next", "/"))
+
+        permission = self._permission_for_login(username, passcode)
+        if permission is None:
+            error = quote("Invalid username or passcode", safe="")
+            safe_next = quote(next_path, safe="")
+            raise web.HTTPFound(location=f"/login?error={error}&next={safe_next}")
+
+        session_id = self._create_session(permission)
+        response = web.HTTPFound(location=next_path)
+        response.set_cookie(
+            self.session_cookie_name,
+            session_id,
+            max_age=self.session_ttl_seconds,
+            httponly=True,
+            samesite="Lax",
+        )
+        raise response
+
+    async def logout_submit(self, request: web.Request):
+        _, session_id = self._session_permission(request)
+        self._destroy_session(session_id)
+
+        response = web.HTTPFound(location="/login")
+        response.del_cookie(self.session_cookie_name)
+        raise response
+
+    async def home_page(self, request: web.Request):
+        permission = await self._authorize(request)
+        body = f"""
+<div class="card">
+    <h2>NemoBot Dashboard (Beta)</h2>
   <p>Dashboard host: {html.escape(self.host)}:{self.port}</p>
   <p>This panel supports level formula controls, leaderboards, automod, bot settings, restart, and optional console access.</p>
   <ul>
-    <li>Viewer token: can view statistics and settings pages.</li>
-    <li>Admin token: can edit settings, restart the bot, and run console commands when enabled.</li>
+    <li>Viewer: can view statistics and settings pages.</li>
+    <li>Admin: can edit settings and run console commands when enabled.</li>
+    <li>Dev: highest access level for dev-only actions.</li>
   </ul>
-  <p>Use this URL with token: <span class="mono">?{self._token_query(token)}</span></p>
 </div>
 """
-        return web.Response(text=self._layout("Dashboard", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Dashboard (Beta)", body, permission), content_type="text/html")
 
     async def leaderboard_page(self, request: web.Request):
-        permission, token = await self._authorize(request)
+        permission = await self._authorize(request)
 
         rows_html = ""
         async with aiosqlite.connect(self.level_db) as db:
@@ -359,10 +491,10 @@ class Dashboard(commands.Cog):
   </table>
 </div>
 """
-        return web.Response(text=self._layout("Leaderboard", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Leaderboard", body, permission), content_type="text/html")
 
     async def level_formula_page(self, request: web.Request):
-        permission, token = await self._authorize(request)
+        permission = await self._authorize(request)
         level_cog = self.bot.get_cog("LevelSystem")
 
         if not level_cog:
@@ -372,7 +504,6 @@ class Dashboard(commands.Cog):
         preview_level = max(0, int(request.query.get("preview_level", "10") or 10))
         xp_for_step = level_cog.get_xp_needed_for_level(preview_level)
         xp_to_reach = level_cog.get_total_xp_for_level(preview_level)
-        q = self._token_query(token)
 
         body = f"""
 <div class="card">
@@ -380,7 +511,6 @@ class Dashboard(commands.Cog):
   <p>Current formula: <strong>XP needed from level L to L+1 = XP_BASE + XP_SCALE * L</strong></p>
   <p>Current values: XP_BASE={formula['xp_base']}, XP_SCALE={formula['xp_scale']}</p>
   <form method="get" action="/level-formula">
-    <input type="hidden" name="token" value="{html.escape(token)}" />
     <label>Preview level (L)</label>
     <input type="number" name="preview_level" min="0" value="{preview_level}" />
     <button type="submit">Preview</button>
@@ -390,11 +520,11 @@ class Dashboard(commands.Cog):
 </div>
 """
 
-        if permission == "admin":
+        if self._permission_allows(permission, "admin"):
             body += f"""
 <div class="card">
   <h2>Update Formula</h2>
-  <form method="post" action="/level-formula?{q}">
+  <form method="post" action="/level-formula">
     <label>XP_BASE</label>
     <input type="number" name="xp_base" step="0.01" min="1" value="{formula['xp_base']}" />
     <label>XP_SCALE</label>
@@ -405,10 +535,10 @@ class Dashboard(commands.Cog):
 </div>
 """
 
-        return web.Response(text=self._layout("Level Formula", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Level Formula", body, permission), content_type="text/html")
 
     async def level_formula_update(self, request: web.Request):
-        _, token = await self._authorize(request, require_admin=True)
+        await self._authorize(request, required_permission="admin")
         level_cog = self.bot.get_cog("LevelSystem")
         if not level_cog:
             return web.Response(status=503, text="LevelSystem cog is not loaded")
@@ -422,15 +552,15 @@ class Dashboard(commands.Cog):
         except Exception as exc:
             return web.Response(status=400, text=f"Failed to update formula: {exc}")
 
-        raise web.HTTPFound(location=f"/level-formula?{self._token_query(token)}")
+        raise web.HTTPFound(location="/level-formula")
 
     async def automod_page(self, request: web.Request):
-        permission, token = await self._authorize(request)
+        permission = await self._authorize(request)
 
         guilds = sorted(self.bot.guilds, key=lambda g: g.name.lower())
         if not guilds:
-            body = "<div class=\"card\"><h2>Automod</h2><p>Bot is not in any guild.</p></div>"
-            return web.Response(text=self._layout("Automod", body, token, permission), content_type="text/html")
+            body = '<div class="card"><h2>Automod</h2><p>Bot is not in any guild.</p></div>'
+            return web.Response(text=self._layout("Automod", body, permission), content_type="text/html")
 
         try:
             selected_guild_id = int(request.query.get("guild_id", str(guilds[0].id)))
@@ -444,33 +574,32 @@ class Dashboard(commands.Cog):
             for g in guilds
         )
 
-        q = self._token_query(token)
         checked = "checked" if settings["anti_link"] else ""
         blocked_words = ", ".join(settings["blocked_words"])
         automod_submit = (
             '<button type="submit">Save Automod</button>'
-            if permission == "admin"
+            if self._permission_allows(permission, "admin")
             else "<p>Viewer mode: read-only.</p>"
         )
 
         body = f"""
 <div class="card">
   <h2>Automod Settings</h2>
-  <form method="post" action="/automod?{q}">
+  <form method="post" action="/automod">
     <label>Guild</label>
     <select name="guild_id">{guild_options}</select>
     <label><input type="checkbox" name="anti_link" value="1" {checked} /> Delete messages containing links</label>
     <label>Blocked words (comma-separated)</label>
     <textarea name="blocked_words">{html.escape(blocked_words)}</textarea>
-        {automod_submit}
+    {automod_submit}
   </form>
 </div>
 """
 
-        return web.Response(text=self._layout("Automod", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Automod", body, permission), content_type="text/html")
 
     async def automod_update(self, request: web.Request):
-        _, token = await self._authorize(request, require_admin=True)
+        await self._authorize(request, required_permission="admin")
         data = await request.post()
 
         try:
@@ -482,15 +611,14 @@ class Dashboard(commands.Cog):
         blocked_words = self._form_text(data, "blocked_words", "")
         await self.save_automod_settings(guild_id, anti_link, blocked_words)
 
-        raise web.HTTPFound(location=f"/automod?{self._token_query(token)}&guild_id={guild_id}")
+        raise web.HTTPFound(location=f"/automod?guild_id={guild_id}")
 
     async def settings_page(self, request: web.Request):
-        permission, token = await self._authorize(request)
+        permission = await self._authorize(request)
 
         current_activity_name = self.bot.activity.name if self.bot.activity and self.bot.activity.name else "NemoBot"
         presence_text = await self.get_setting("presence_text", current_activity_name)
         presence_type = await self.get_setting("presence_type", "watching")
-        q = self._token_query(token)
 
         type_options = "".join(
             f"<option value=\"{opt}\" {'selected' if opt == presence_type else ''}>{opt}</option>"
@@ -498,37 +626,37 @@ class Dashboard(commands.Cog):
         )
         settings_submit = (
             '<button type="submit">Save Bot Settings</button>'
-            if permission == "admin"
+            if self._permission_allows(permission, "admin")
             else "<p>Viewer mode: read-only.</p>"
         )
 
         body = f"""
 <div class="card">
   <h2>Bot Settings</h2>
-  <form method="post" action="/settings?{q}">
+  <form method="post" action="/settings">
     <label>Presence text</label>
     <input type="text" name="presence_text" value="{html.escape(presence_text)}" maxlength="128" />
     <label>Presence type</label>
     <select name="presence_type">{type_options}</select>
-        {settings_submit}
+    {settings_submit}
   </form>
 </div>
 """
 
-        if permission == "admin":
-            body += f"""
+        if self._permission_allows(permission, "dev"):
+            body += """
 <div class="card">
   <h2>Bot Restart</h2>
-  <form method="post" action="/restart?{q}">
+  <form method="post" action="/restart">
     <button class="danger" type="submit">Restart Bot Process</button>
   </form>
 </div>
 """
 
-        return web.Response(text=self._layout("Bot Settings", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Bot Settings", body, permission), content_type="text/html")
 
     async def settings_update(self, request: web.Request):
-        _, token = await self._authorize(request, require_admin=True)
+        await self._authorize(request, required_permission="admin")
         data = await request.post()
 
         presence_text = self._form_text(data, "presence_text", "NemoBot").strip()[:128] or "NemoBot"
@@ -548,17 +676,16 @@ class Dashboard(commands.Cog):
             activity=discord.Activity(type=activity_type, name=presence_text)
         )
 
-        raise web.HTTPFound(location=f"/settings?{self._token_query(token)}")
+        raise web.HTTPFound(location="/settings")
 
     async def restart_bot(self, request: web.Request):
-        _, token = await self._authorize(request, require_admin=True)
+        permission = await self._authorize(request, required_permission="dev")
         asyncio.get_event_loop().create_task(self._delayed_restart())
         return web.Response(
             text=self._layout(
                 "Restarting",
-                "<div class=\"card\"><h2>Restart requested</h2><p>Bot process is restarting now.</p></div>",
-                token,
-                "admin",
+                '<div class="card"><h2>Restart requested</h2><p>Bot process is restarting now.</p></div>',
+                permission,
             ),
             content_type="text/html",
         )
@@ -568,34 +695,30 @@ class Dashboard(commands.Cog):
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
     async def console_page(self, request: web.Request):
-        permission, token = await self._authorize(request)
-
-        if permission != "admin":
-            return web.Response(status=403, text="Console requires admin token")
+        permission = await self._authorize(request, required_permission="admin")
 
         if not self.console_enabled:
             body = (
-                "<div class=\"card\"><h2>Console disabled</h2>"
-                "<p>Set DASHBOARD_ENABLE_CONSOLE=true to enable this feature.</p></div>"
+                '<div class="card"><h2>Console disabled</h2>'
+                '<p>Set DASHBOARD_ENABLE_CONSOLE=true to enable this feature.</p></div>'
             )
-            return web.Response(text=self._layout("Console", body, token, permission), content_type="text/html")
+            return web.Response(text=self._layout("Console", body, permission), content_type="text/html")
 
-        q = self._token_query(token)
-        body = f"""
+        body = """
 <div class="card">
   <h2>Console</h2>
   <p>Runs shell commands on the bot host. Use with care.</p>
-  <form method="post" action="/console?{q}">
+  <form method="post" action="/console">
     <label>Command</label>
     <input type="text" name="command" maxlength="400" placeholder="echo hello" />
     <button type="submit">Run</button>
   </form>
 </div>
 """
-        return web.Response(text=self._layout("Console", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Console", body, permission), content_type="text/html")
 
     async def console_run(self, request: web.Request):
-        permission, token = await self._authorize(request, require_admin=True)
+        permission = await self._authorize(request, required_permission="admin")
         if not self.console_enabled:
             return web.Response(status=403, text="Console is disabled")
 
@@ -626,10 +749,10 @@ class Dashboard(commands.Cog):
   <h2>Console Result</h2>
   <p><strong>Command:</strong> {html.escape(command)}</p>
   <div class="mono">{html.escape(output or '(no output)')}</div>
-  <p><a href="/console?{self._token_query(token)}">Run another command</a></p>
+  <p><a href="/console">Run another command</a></p>
 </div>
 """
-        return web.Response(text=self._layout("Console Result", body, token, permission), content_type="text/html")
+        return web.Response(text=self._layout("Console Result", body, permission), content_type="text/html")
 
     @commands.Cog.listener()
     async def on_message(self, message):
