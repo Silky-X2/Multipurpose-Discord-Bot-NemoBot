@@ -175,7 +175,7 @@ class Fishing(commands.Cog):
             pass
 
     # FISHING COMMAND
-    @slash_command(name="fish", description="Geh angeln! 🎣")
+    @slash_command(name="fish", description="Geh angeln!")
     async def fishing(self, ctx):
         user_id = ctx.author.id
         guild_id = ctx.guild_id
@@ -195,9 +195,9 @@ class Fishing(commands.Cog):
         wait_time = random.randint(2, 8)
 
         embed = discord.Embed(
-            title="🎣 Du wirfst deine Angel aus...",
+            title="Du wirfst deine Angel aus...",
             description=f"Warte {wait_time} Sekunden bis ein Fisch anbeißt!",
-            color=discord.Color.blue()
+            color=discord.Color.purple()
         )
 
         msg = await ctx.respond(embed=embed)
@@ -221,7 +221,7 @@ class Fishing(commands.Cog):
         embed = discord.Embed(
             title="🎣 Ein Fisch beißt an!",
             description="Klick schnell auf den Button! ⏱️",
-            color=discord.Color.gold()
+            color=discord.Color.purple()
         )
 
         view = self.FishingView(self, user_id, fish)
@@ -242,7 +242,7 @@ class Fishing(commands.Cog):
                 stats_row = await cursor.fetchone()
 
             if not stats_row:
-                await ctx.respond("Du hast noch keine Fische gefangen! 🎣", ephemeral=True)
+                await ctx.respond("Du hast noch keine Fische gefangen!", ephemeral=True)
                 return
 
             total_catches, total_weight, legendary, epic, rare, common = stats_row
@@ -258,8 +258,8 @@ class Fishing(commands.Cog):
                 fishes = await cursor.fetchall()
 
         embed = discord.Embed(
-            title=f"🎣 {ctx.author.name}'s Fische",
-            color=discord.Color.blue()
+            title=f" {ctx.author.name}'s Fische",
+            color=discord.Color.purple()
         )
 
         fish_list = ""
@@ -302,7 +302,7 @@ class Fishing(commands.Cog):
 
         embed = discord.Embed(
             title="🎣 Fishing Leaderboard",
-            color=discord.Color.gold()
+            color=discord.Color.purple()
         )
 
         leaderboard_text = ""
@@ -358,4 +358,4 @@ class Fishing(commands.Cog):
 def setup(bot):
     cog = Fishing(bot)
     bot.add_cog(cog)
-    asyncio.create_task(cog.setup_database())
+    bot.loop.create_task(cog.setup_database())

@@ -500,5 +500,5 @@ def setup(bot):
     cog = Giveaway(bot)
     bot.add_cog(cog)
     # Initialisiere Datenbank und lade gespeicherte Giveaways
-    asyncio.create_task(cog.setup_database())
-    asyncio.create_task(cog.load_giveaways())
+    bot.loop.create_task(cog.setup_database())
+    bot.loop.create_task(cog.load_giveaways())
