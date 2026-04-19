@@ -25,7 +25,6 @@ _UNIT_SECONDS = {
     "w": 604800,
     "week": 604800,
     "weeks": 604800,
-    # The requester explicitly asked for "2m" as months, and "min" for minutes.
     "m": 2592000,
     "mo": 2592000,
     "mon": 2592000,
