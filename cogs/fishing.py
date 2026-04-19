@@ -30,6 +30,11 @@ class Fishing(commands.Cog):
             "🐚 Muschel": {"rarity": "common", "min": 2, "max": 5, "emoji": "🐚", "wert": 40},
         }
 
+        self._fishes_by_rarity = {}
+        for fish_name, fish_data in self.fishes.items():
+            rarity = fish_data.get("rarity", "common")
+            self._fishes_by_rarity.setdefault(rarity, []).append((fish_name, fish_data))
+
         # RARITY FARBEN
         self.rarity_colors = {
             "common": discord.Color.from_rgb(128, 128, 128),      
@@ -81,14 +86,13 @@ class Fishing(commands.Cog):
         chosen_rarity = random.choices(rarities, weights=weights, k=1)[0]
 
         # Finde alle Fische mit dieser Rarity
-        available_fishes = {name: data for name, data in self.fishes.items() if data["rarity"] == chosen_rarity}
-        
+        available_fishes = self._fishes_by_rarity.get(chosen_rarity, [])
+
         if not available_fishes:
             return None
 
         # Wähle zufälligen Fisch
-        fish_name = random.choice(list(available_fishes.keys()))
-        fish_data = available_fishes[fish_name]
+        fish_name, fish_data = random.choice(available_fishes)
 
         # Generiere Gewicht
         weight = round(random.uniform(fish_data["min"], fish_data["max"]), 2)
@@ -329,17 +333,16 @@ class Fishing(commands.Cog):
             """, (user_id, guild_id)) as cursor:
                 fishes = await cursor.fetchall()
 
-        if not fishes:
-            await ctx.respond("Du hast keine Fische zum Verkaufen!", ephemeral=True)
-            return
+            if not fishes:
+                await ctx.respond("Du hast keine Fische zum Verkaufen!", ephemeral=True)
+                return
 
-        total_value = 0
-        for fish_name, count in fishes:
-            if fish_name in self.fishes:
-                total_value += self.fishes[fish_name]["wert"] * count
+            total_value = 0
+            for fish_name, count in fishes:
+                if fish_name in self.fishes:
+                    total_value += self.fishes[fish_name]["wert"] * count
 
-        # Lösche Fische
-        async with aiosqlite.connect(self.db_path) as db:
+            # Lösche Fische
             await db.execute("""
                 DELETE FROM fishing_inventory
                 WHERE user_id = ? AND guild_id = ?
@@ -358,4 +361,4 @@ class Fishing(commands.Cog):
 def setup(bot):
     cog = Fishing(bot)
     bot.add_cog(cog)
-    asyncio.create_task(cog.setup_database())
+    asyncio.get_event_loop().create_task(cog.setup_database())

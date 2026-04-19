@@ -1,11 +1,10 @@
 import discord
 from discord.ext import commands, tasks
-from discord.commands import slash_command
+from discord.commands import slash_command, Option
 import aiosqlite
 import asyncio
 import datetime
 import os
-
 
 class punishment(commands.Cog):
 
@@ -15,7 +14,7 @@ class punishment(commands.Cog):
 		self.mute_role_id = 1448393918323622010  # Mute Role ID
 
 		# MOD ROLE
-		self.mod_roles = [1448393918323622010]
+		self.mod_roles = {1448393918323622010}
 
 	# SETUP DATABASE
 	async def setup_database(self):
@@ -49,10 +48,7 @@ class punishment(commands.Cog):
 	async def is_mod_or_admin(self, member: discord.Member):
 		if member.guild_permissions.administrator:
 			return True
-		for role in member.roles:
-			if role.id in self.mod_roles:
-				return True
-		return False
+		return any(role.id in self.mod_roles for role in member.roles)
 
 	# LOG PUNISHMENT
 	async def log_punishment(self, user_id: int, guild_id: int, mod_id: int, action: str, reason: str, duration: int = None, expires_at: str = None):
@@ -346,4 +342,4 @@ class punishment(commands.Cog):
 def setup(bot):
 	cog = punishment(bot)
 	bot.add_cog(cog)
-	asyncio.create_task(cog.setup_database())
+	asyncio.get_event_loop().create_task(cog.setup_database())
