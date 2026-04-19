@@ -55,14 +55,15 @@ class Debug(commands.Cog):
                 await message.channel.send("Dashboard Cog nicht gefunden!")
                 return
 
-            dashboard_url = f"http://{dashboard_cog._dashboard_public_host()}:{dashboard_cog.port}/"
+            urls = await dashboard_cog.dashboard_access_urls()
+            lan_line = f"Network: {urls['lan']}\n" if urls.get("lan") else "Network: not detected\n"
             try:
                 await message.author.send(
-                    "Only you can see this.\n"
-                    f"Dashboard link: {dashboard_url}\n"
-                    "Login with username `viewer`, `admin`, or `dev` and the matching passcode token from .env."
+                    f"Local: {urls['local']}\n"
+                    f"{lan_line}"
+                    f"Public: {urls['public']}\n\n"
                 )
-                await message.channel.send("Link sent to DM.")
+                await message.channel.send("Look DM.")
             except discord.Forbidden:
                 await message.channel.send("Ich kann dir keine DM senden. Bitte aktiviere DMs und versuche es erneut.")
         # elif cmd == "restart":

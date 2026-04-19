@@ -1,8 +1,10 @@
 import asyncio
 import html
+import ipaddress
 import os
 import re
 import secrets
+import socket
 import sys
 import time
 from io import BytesIO
@@ -11,7 +13,7 @@ from urllib.parse import quote
 
 import aiosqlite
 import discord
-from aiohttp import web
+from aiohttp import ClientSession, ClientTimeout, web
 from aiohttp.web_request import FileField
 from discord.ext import commands
 from PIL import Image
@@ -52,6 +54,11 @@ class Dashboard(commands.Cog):
         self.session_cookie_name = "nemo_dashboard_session"
         self.session_ttl_seconds = int(os.getenv("DASHBOARD_SESSION_TTL_SECONDS", "43200"))
         self.sessions = {}
+        self.public_ip_cache_ttl_seconds = int(
+            os.getenv("DASHBOARD_PUBLIC_IP_CACHE_TTL_SECONDS", "300")
+        )
+        self._cached_public_ip = ""
+        self._public_ip_cache_expires_at = 0.0
 
         self.automod_cache = {}
         self._startup_done = False
@@ -213,12 +220,143 @@ class Dashboard(commands.Cog):
         return next_path
 
     def _dashboard_public_host(self):
+        public_ip = os.getenv("DASHBOARD_PUBLIC_IP", "").strip()
         public_host = os.getenv("DASHBOARD_PUBLIC_HOST", "").strip()
         if public_host:
             return public_host
+        if public_ip:
+            return public_ip
         if self.host in {"0.0.0.0", "::"}:
             return "127.0.0.1"
         return self.host
+
+    def _dashboard_public_scheme(self):
+        scheme = os.getenv("DASHBOARD_PUBLIC_SCHEME", "http").strip().lower()
+        if scheme in {"http", "https"}:
+            return scheme
+        return "http"
+
+    def _dashboard_public_port(self):
+        raw_public_port = os.getenv("DASHBOARD_PUBLIC_PORT", "").strip()
+        if not raw_public_port:
+            return self.port
+        try:
+            public_port = int(raw_public_port)
+        except ValueError:
+            return self.port
+        if public_port <= 0 or public_port > 65535:
+            return self.port
+        return public_port
+
+    def _is_global_ip(self, value: str) -> bool:
+        try:
+            return ipaddress.ip_address((value or "").strip()).is_global
+        except ValueError:
+            return False
+
+    def _should_try_public_ip_detection(self, host: str) -> bool:
+        normalized = (host or "").strip().lower()
+        if normalized in {"", "localhost", "127.0.0.1", "::1", "0.0.0.0", "::"}:
+            return True
+        if self._is_global_ip(normalized):
+            return False
+        try:
+            return not ipaddress.ip_address(normalized).is_global
+        except ValueError:
+            # Hostnames can still be valid public targets; only force detection for obvious local values.
+            return False
+
+    async def _detect_public_ip(self) -> str:
+        now = time.time()
+        if self._cached_public_ip and now < self._public_ip_cache_expires_at:
+            return self._cached_public_ip
+
+        custom_endpoint = os.getenv("DASHBOARD_PUBLIC_IP_ENDPOINT", "").strip()
+        endpoints = [
+            custom_endpoint,
+            "https://api.ipify.org",
+            "https://ifconfig.me/ip",
+            "https://checkip.amazonaws.com",
+        ]
+        timeout = ClientTimeout(total=4)
+
+        try:
+            async with ClientSession(timeout=timeout) as session:
+                for endpoint in endpoints:
+                    if not endpoint:
+                        continue
+                    try:
+                        async with session.get(endpoint, headers={"User-Agent": "NemoBot/1.0"}) as response:
+                            if response.status != 200:
+                                continue
+                            body = (await response.text()).strip()
+                            candidate = body.splitlines()[0].strip() if body else ""
+                            if self._is_global_ip(candidate):
+                                self._cached_public_ip = candidate
+                                self._public_ip_cache_expires_at = now + self.public_ip_cache_ttl_seconds
+                                return candidate
+                    except Exception:
+                        continue
+        except Exception:
+            return ""
+
+        return ""
+
+    async def dashboard_public_url(self):
+        explicit_public_url = os.getenv("DASHBOARD_PUBLIC_URL", "").strip()
+        if explicit_public_url:
+            if not explicit_public_url.startswith(("http://", "https://")):
+                explicit_public_url = f"{self._dashboard_public_scheme()}://{explicit_public_url}"
+            return explicit_public_url.rstrip("/") + "/"
+
+        public_host = self._dashboard_public_host()
+        if self._should_try_public_ip_detection(public_host):
+            detected_public_ip = await self._detect_public_ip()
+            if detected_public_ip:
+                public_host = detected_public_ip
+
+        public_scheme = self._dashboard_public_scheme()
+        public_port = self._dashboard_public_port()
+
+        show_port = not (
+            (public_scheme == "http" and public_port == 80)
+            or (public_scheme == "https" and public_port == 443)
+        )
+        port_suffix = f":{public_port}" if show_port else ""
+        return f"{public_scheme}://{public_host}{port_suffix}/"
+
+    def dashboard_local_url(self):
+        return f"http://127.0.0.1:{self.port}/"
+
+    def _detect_lan_ip(self) -> str:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                candidate = sock.getsockname()[0]
+        except Exception:
+            return ""
+
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            return ""
+
+        if address.is_loopback or address.is_unspecified:
+            return ""
+        return candidate
+
+    def dashboard_lan_url(self):
+        lan_ip = self._detect_lan_ip()
+        if not lan_ip:
+            return ""
+        return f"http://{lan_ip}:{self.port}/"
+
+    async def dashboard_access_urls(self):
+        return {
+            "local": self.dashboard_local_url(),
+            "lan": self.dashboard_lan_url(),
+            "public": await self.dashboard_public_url(),
+        }
 
     def _level_mode_label(self, mode: str) -> str:
         labels = {

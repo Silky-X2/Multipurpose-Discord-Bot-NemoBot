@@ -40,6 +40,13 @@
 	  | `Token`                   | **Required.** Your Discord bot token.                            |
 	  | `DASHBOARD_HOST`          | Host for the dashboard (default: `0.0.0.0`).                     |
 	  | `DASHBOARD_PORT`          | Port for the dashboard (default: `8080`).                        |
+	  | `DASHBOARD_PUBLIC_URL`    | Optional full public URL used for DM links (e.g. `https://dash.example.com/`). |
+	  | `DASHBOARD_PUBLIC_HOST`   | Optional public host/domain used for DM links when no full URL is set. |
+	  | `DASHBOARD_PUBLIC_IP`     | Optional public IP fallback used for DM links when host is not set. |
+	  | `DASHBOARD_PUBLIC_PORT`   | Optional public port for DM links (defaults to `DASHBOARD_PORT`). |
+	  | `DASHBOARD_PUBLIC_SCHEME` | Optional scheme for generated links (`http` or `https`, default: `http`). |
+	  | `DASHBOARD_PUBLIC_IP_ENDPOINT` | Optional endpoint used to auto-detect public IP when needed. |
+	  | `DASHBOARD_PUBLIC_IP_CACHE_TTL_SECONDS` | Cache duration (seconds) for detected public IP (default: `300`). |
 	  | `DASHBOARD_VIEW_TOKEN`    | Passcode for `viewer` dashboard login.                           |
 	  | `DASHBOARD_ADMIN_TOKEN`   | Passcode for `admin` dashboard login.                            |
 	  | `DASHBOARD_DEV_TOKEN`     | Passcode for `dev` dashboard login.                              |
@@ -58,6 +65,16 @@ Dashboard access uses usernames with matching passcodes from `.env`:
 ```env
 DASHBOARD_HOST=0.0.0.0
 DASHBOARD_PORT=8080
+# Preferred: set a full public URL (domain or IP)
+DASHBOARD_PUBLIC_URL=https://dashboard.example.com/
+# Alternative host/IP based setup (used when DASHBOARD_PUBLIC_URL is empty)
+# DASHBOARD_PUBLIC_HOST=dashboard.example.com
+# DASHBOARD_PUBLIC_IP=203.0.113.42
+# DASHBOARD_PUBLIC_PORT=8080
+# DASHBOARD_PUBLIC_SCHEME=https
+# Optional IP detection tuning
+# DASHBOARD_PUBLIC_IP_ENDPOINT=https://api.ipify.org
+# DASHBOARD_PUBLIC_IP_CACHE_TTL_SECONDS=300
 DASHBOARD_VIEW_TOKEN=change-this-view-token
 DASHBOARD_ADMIN_TOKEN=change-this-admin-token
 DASHBOARD_DEV_TOKEN=change-this-dev-token
@@ -71,8 +88,8 @@ The dashboard cog loads automatically when you run the bot (because every `.py` 
 
 Quick access in Discord:
 - Enable debug mode with `/debug`, then use `%dashboard`.
-- The bot replies in channel with a short confirmation and sends the dashboard link via DM.
-- The DM states "Only you can see this" and does not post passcodes publicly.
+- The bot replies in channel with a short confirmation and sends dashboard URLs via DM.
+- The DM includes links for `Same PC`, `Same Wi-Fi/LAN`, and `Public/Internet`.
 
 1. Start the bot:
 	```bash
@@ -81,6 +98,21 @@ Quick access in Discord:
 2. Open the dashboard in your browser:
 	- Local machine: `http://127.0.0.1:8080/`
 	- Remote/VPS host: `http://<server-ip>:8080/`
+
+For links sent via `%dashboard`, the bot now prefers:
+- `DASHBOARD_PUBLIC_URL` (best option, supports domain or IP)
+- else `DASHBOARD_PUBLIC_HOST`
+- else `DASHBOARD_PUBLIC_IP`
+- else auto-detected public IP (if host is local/private)
+- else internal fallback
+
+So yes: you do not have to define a fixed public IP manually. The bot can auto-detect it.
+For reliable production setups, using `DASHBOARD_PUBLIC_URL` is still recommended.
+
+If you want access from any external network (for example from anywhere in Germany), ensure your host is publicly reachable:
+- Open/forward the dashboard port in firewall/router/NAT
+- Use a public static IP or domain (or dynamic DNS)
+- If your ISP uses CGNAT, expose the dashboard via reverse proxy/tunnel/VPS
 
 Login credentials:
 - Username: `viewer` and passcode: value of `DASHBOARD_VIEW_TOKEN`
@@ -108,6 +140,7 @@ Dashboard home shows spoiler blocks with credentials for your own permission lev
 - `403 Admin permission required`: you opened an admin action while logged in as `viewer`
 - `403 Dev permission required`: restart/log pages require `dev`
 - Dashboard not reachable: check `DASHBOARD_HOST`/`DASHBOARD_PORT`, firewall rules, and that the bot process is running
+- DM link points to wrong host/IP: set `DASHBOARD_PUBLIC_URL` (or `DASHBOARD_PUBLIC_HOST`/`DASHBOARD_PUBLIC_IP`)
 - Port already in use: change `DASHBOARD_PORT` to another free port
 
 ### Level Card Background Storage
