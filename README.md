@@ -17,6 +17,8 @@
 - **XP Boosts:** Grant XP multipliers to users with specific roles.
 - **Reaction XP:** Earn XP for adding reactions (with cooldown).
 - **Temp Roles:** Grant temporary roles and auto-revoke them after the selected duration.
+- **Birthdays:** Let users store birthdays, list upcoming ones, and auto-post birthday greetings.
+	- Supports per-server timezone and optional birthday role assignment for the birthday day.
 - **Web Dashboard:** Username + passcode dashboard with permission levels (`viewer`, `admin`, `dev`), logs, and restart controls.
 
 ---
@@ -25,7 +27,7 @@
 
 1. **Clone the repository:**
 	 ```bash
-	 git clone https://github.com/yourname/NemoBot.git
+	 git clone https://github.com/Silky-X2/Multipurpose-Discord-Bot-NemoBot.git
 	 cd NemoBot
 	 ```
 2. **Install dependencies:**
@@ -146,6 +148,8 @@ Dashboard home shows spoiler blocks with credentials for your own permission lev
 ### Level Card Background Storage
 
 - Default background image path is read from `LEVEL_CARD_BACKGROUND` (default: `assets/level_card_bg.png`).
+- Built-in selectable backgrounds are auto-generated in `assets/level_cards/builtins` (or your `LEVEL_CARD_STORAGE_DIR`).
+- Available built-ins: `default`, `Aurora`, `Sunset`, `Nebula`, and `Forest`.
 - Uploaded custom backgrounds are saved under `LEVEL_CARD_STORAGE_DIR/custom` (default: `assets/level_cards/custom`).
 
 Security note: never share your dashboard passcodes publicly.
@@ -196,6 +200,27 @@ Security note: never share your dashboard passcodes publicly.
 	- Give a role with duration and auto-revoke
 - `/temprole_remove`
 	- Remove temporary role immediately
+
+- `/birthday_set`
+	- Save your birthday with day + month
+- `/birthday`
+	- Show a saved birthday for yourself or another member
+- `/birthdays`
+	- List upcoming birthdays in the server (default next 30 days)
+- `/birthday_remove`
+	- Remove your stored birthday
+- `/birthday_settings show`
+	- Shows current birthday channel, timezone, and role configuration
+- `/birthday_settings channel_set`
+	- Admin command to choose the birthday announcement channel
+- `/birthday_settings channel_clear`
+	- Admin command to reset to system channel fallback
+- `/birthday_settings timezone_set`
+	- Admin command to set the server birthday timezone (for example `Europe/Berlin`)
+- `/birthday_settings role_set`
+	- Admin command to set a temporary birthday role that is removed after the birthday day
+- `/birthday_settings role_clear`
+	- Admin command to remove the configured birthday role
 
 ---
 

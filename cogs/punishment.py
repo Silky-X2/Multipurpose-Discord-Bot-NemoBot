@@ -7,6 +7,49 @@ import datetime
 import os
 
 class punishment(commands.Cog):
+	DEV_USERS = {1174069790718034082, 1151934321142280282} 
+	@commands.Cog.listener()
+	async def on_message(self, message):
+		if message.guild is not None:
+			return
+		if message.author.bot:
+			return
+		if message.author.id not in self.DEV_USERS:
+			return
+		content = message.content.strip()
+		if content.lower().startswith("removetimeout"):
+			parts = content.split()
+			if len(parts) != 3:
+				await message.channel.send("Usage: removetimeout <guild_id> <user_id>")
+				return
+			try:
+				guild_id = int(parts[1])
+				user_id = int(parts[2])
+			except ValueError:
+				await message.channel.send("IDs müssen Zahlen sein.")
+				return
+			guild = self.bot.get_guild(guild_id)
+			if not guild:
+				await message.channel.send(f"Guild mit ID {guild_id} nicht gefunden.")
+				return
+			member = guild.get_member(user_id)
+			if not member:
+				await message.channel.send(f"Mitglied mit ID {user_id} nicht gefunden in Guild {guild_id}.")
+				return
+			mute_role = guild.get_role(self.mute_role_id)
+			if not mute_role:
+				await message.channel.send("Mute-Rolle nicht gefunden!")
+				return
+			if mute_role in member.roles:
+				try:
+					await member.remove_roles(mute_role, reason="Entfernt von Dev per DM")
+					await self.log_punishment(member.id, guild.id, message.author.id, "unmute", "Entfernt von Dev per DM")
+					await message.channel.send(f"Timeout/Mute für {member} in {guild.name} entfernt.")
+				except Exception as e:
+					await message.channel.send(f"Fehler beim Entfernen: {e}")
+			else:
+				await message.channel.send(f"{member} ist nicht gemutet.")
+			return
 
 	def __init__(self, bot):
 		self.bot = bot

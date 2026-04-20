@@ -132,9 +132,19 @@ class LevelSystem(commands.Cog):
         self.has_legacy_remain_xp = False
         self.progress_initialized = False
 
-        self.default_level_card_path = os.getenv("LEVEL_CARD_BACKGROUND", "assets/level_card_bg.png")
-        self.level_card_storage_dir = os.getenv("LEVEL_CARD_STORAGE_DIR", "assets/level_cards")
+        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+        self.default_level_card_path = self._to_project_path(
+            os.getenv("LEVEL_CARD_BACKGROUND"),
+            "assets/level_card_bg.png",
+        )
+        self.level_card_storage_dir = self._to_project_path(
+            os.getenv("LEVEL_CARD_STORAGE_DIR"),
+            "assets/level_cards",
+        )
         self.level_card_custom_dir = os.path.join(self.level_card_storage_dir, "custom")
+        self.level_card_builtin_dir = os.path.join(self.level_card_storage_dir, "builtins")
+        self._level_card_assets_initialized = False
 
         # COOLDOWN
         self.cooldowns = {}
@@ -318,7 +328,180 @@ class LevelSystem(commands.Cog):
         except Exception:
             return False
 
+    def _to_project_path(self, value: Optional[str], fallback: Optional[str] = None) -> str:
+        raw = (value or fallback or "").strip()
+        if not raw:
+            return ""
+
+        expanded = os.path.expanduser(raw)
+        if os.path.isabs(expanded):
+            return os.path.abspath(expanded)
+
+        return os.path.abspath(os.path.join(self.project_root, expanded))
+
+    def _iter_level_card_path_candidates(self, path_value: Optional[str]):
+        raw = (path_value or "").strip()
+        if not raw:
+            return []
+
+        candidates = []
+        seen = set()
+
+        def add_path(candidate: Optional[str]):
+            if not candidate:
+                return
+            absolute = os.path.abspath(os.path.expanduser(os.path.normpath(candidate)))
+            if absolute in seen:
+                return
+            seen.add(absolute)
+            candidates.append(absolute)
+
+        normalized_separators = raw.replace("\\", os.sep).replace("/", os.sep)
+
+        add_path(raw)
+        add_path(normalized_separators)
+
+        if not os.path.isabs(raw):
+            add_path(os.path.join(self.project_root, raw))
+        if not os.path.isabs(normalized_separators):
+            add_path(os.path.join(self.project_root, normalized_separators))
+
+        file_name = os.path.basename(normalized_separators or raw)
+        if file_name:
+            add_path(os.path.join(self.level_card_custom_dir, file_name))
+            add_path(os.path.join(self.level_card_builtin_dir, file_name))
+            if self.default_level_card_path:
+                add_path(os.path.join(os.path.dirname(self.default_level_card_path), file_name))
+
+        return candidates
+
+    def _resolve_level_card_file_path(self, path_value: Optional[str]):
+        fallback = self.default_level_card_path or self._to_project_path("assets/level_card_bg.png")
+        all_candidates = self._iter_level_card_path_candidates(path_value)
+        all_candidates.extend(self._iter_level_card_path_candidates(fallback))
+
+        for candidate in all_candidates:
+            if os.path.isfile(candidate):
+                return candidate
+
+        return None
+
+    def _builtin_level_card_specs(self):
+        return [
+            {
+                "card_key": "aurora",
+                "display_name": "Aurora",
+                "file_name": "aurora.png",
+                "palette": [(5, 14, 29), (10, 61, 82), (32, 154, 147)],
+                "accents": [(76, 245, 206), (92, 160, 255), (116, 106, 255)],
+                "seed": "aurora",
+            },
+            {
+                "card_key": "sunset",
+                "display_name": "Sunset",
+                "file_name": "sunset.png",
+                "palette": [(30, 14, 46), (116, 42, 101), (242, 117, 85)],
+                "accents": [(255, 202, 94), (255, 128, 138), (155, 97, 255)],
+                "seed": "sunset",
+            },
+            {
+                "card_key": "nebula",
+                "display_name": "Nebula",
+                "file_name": "nebula.png",
+                "palette": [(8, 11, 30), (24, 32, 74), (75, 44, 137)],
+                "accents": [(96, 224, 255), (184, 109, 255), (255, 102, 194)],
+                "seed": "nebula",
+            },
+            {
+                "card_key": "forest",
+                "display_name": "Forest",
+                "file_name": "forest.png",
+                "palette": [(9, 24, 20), (18, 62, 43), (71, 123, 72)],
+                "accents": [(141, 220, 104), (110, 182, 255), (243, 206, 116)],
+                "seed": "forest",
+            },
+        ]
+
+    def _generate_level_card_background(self, path: str, palette, accents, seed: str):
+        if os.path.isfile(path):
+            return
+
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+        width, height = 1000, 320
+        image = Image.new("RGBA", (width, height), palette[0])
+        draw = ImageDraw.Draw(image)
+
+        for y in range(height):
+            ratio = 0 if height <= 1 else y / (height - 1)
+            color = self._sample_gradient_color(palette, ratio)
+            draw.line((0, y, width, y), fill=(*color, 255))
+
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        accent_cycle = list(accents) or [(255, 255, 255)]
+
+        overlay_draw.ellipse((-120, -70, 360, 260), fill=(*accent_cycle[0], 96))
+        overlay_draw.ellipse((650, 10, 1120, 430), fill=(*accent_cycle[1 % len(accent_cycle)], 102))
+        overlay_draw.ellipse((210, 175, 520, 500), fill=(*accent_cycle[2 % len(accent_cycle)], 58))
+
+        for index, x in enumerate(range(-160, 1160, 170)):
+            color = accent_cycle[index % len(accent_cycle)]
+            overlay_draw.rounded_rectangle(
+                (x, 0, x + 68, height),
+                radius=24,
+                fill=(*color, 18 + (index % 5) * 4),
+            )
+
+        rng = random.Random(seed)
+        for _ in range(64):
+            radius = rng.randint(2, 5)
+            x = rng.randint(0, width)
+            y = rng.randint(0, height)
+            color = accent_cycle[rng.randrange(len(accent_cycle))]
+            overlay_draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(*color, rng.randint(18, 76)))
+
+        image = Image.alpha_composite(image, overlay)
+        frame = ImageDraw.Draw(image)
+        frame.rounded_rectangle(
+            (16, 16, width - 16, height - 16),
+            radius=32,
+            outline=(255, 255, 255, 42),
+            width=2,
+        )
+        image.save(path, format="PNG")
+
+    def _ensure_level_card_background_files(self):
+        if self._level_card_assets_initialized:
+            return
+
+        os.makedirs(self.level_card_storage_dir, exist_ok=True)
+        os.makedirs(self.level_card_custom_dir, exist_ok=True)
+        os.makedirs(self.level_card_builtin_dir, exist_ok=True)
+
+        default_path = self._to_project_path(self.default_level_card_path, "assets/level_card_bg.png")
+        self.default_level_card_path = default_path
+        self._generate_level_card_background(
+            default_path,
+            [(6, 12, 28), (18, 37, 71), (36, 87, 151)],
+            [(74, 159, 255), (147, 85, 255), (92, 226, 205)],
+            "default-level-card",
+        )
+
+        for preset in self._builtin_level_card_specs():
+            preset_path = os.path.join(self.level_card_builtin_dir, preset["file_name"])
+            self._generate_level_card_background(
+                preset_path,
+                preset["palette"],
+                preset["accents"],
+                preset["seed"],
+            )
+
+        self._level_card_assets_initialized = True
+
     async def ensure_level_card_tables(self, db):
+        self._ensure_level_card_background_files()
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS level_card_settings (
@@ -399,7 +582,7 @@ class LevelSystem(commands.Cog):
             ),
         )
 
-        clean_default_path = (self.default_level_card_path or "assets/level_card_bg.png").strip() or "assets/level_card_bg.png"
+        clean_default_path = self._to_project_path(self.default_level_card_path, "assets/level_card_bg.png")
         self.default_level_card_path = clean_default_path
         await db.execute(
             """
@@ -415,6 +598,23 @@ class LevelSystem(commands.Cog):
             (clean_default_path, now_iso),
         )
 
+        for preset in self._builtin_level_card_specs():
+            preset_path = os.path.join(self.level_card_builtin_dir, preset["file_name"])
+            await db.execute(
+                """
+                INSERT INTO level_cards (card_key, display_name, file_path, unlock_level, is_default, is_custom, is_enabled, created_at)
+                VALUES (?, ?, ?, 0, 0, 0, 1, ?)
+                ON CONFLICT(card_key) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    file_path = excluded.file_path,
+                    unlock_level = 0,
+                    is_default = 0,
+                    is_custom = 0,
+                    is_enabled = 1
+                """,
+                (preset["card_key"], preset["display_name"], preset_path, now_iso),
+            )
+
     def _card_row_to_dict(self, row):
         if not row:
             return None
@@ -427,6 +627,7 @@ class LevelSystem(commands.Cog):
             "is_custom": bool(row[5]),
             "is_enabled": bool(row[6]),
             "created_at": row[7],
+            "is_builtin": not bool(row[4]) and not bool(row[5]),
         }
 
     async def _get_card_by_key_db(self, db, card_key):
@@ -653,6 +854,10 @@ class LevelSystem(commands.Cog):
         if not file_path:
             raise ValueError("file_path is required")
 
+        normalized_file_path = self._to_project_path(file_path)
+        if not os.path.isfile(normalized_file_path):
+            raise ValueError("file_path does not exist")
+
         base_key = self._sanitize_card_key(display_name)
         if not base_key or base_key == "default":
             base_key = "custom_card"
@@ -675,7 +880,7 @@ class LevelSystem(commands.Cog):
                 INSERT INTO level_cards (card_key, display_name, file_path, unlock_level, is_default, is_custom, is_enabled, created_at)
                 VALUES (?, ?, ?, ?, 0, 1, 1, ?)
                 """,
-                (candidate, safe_name, file_path, unlock_level, now_iso),
+                (candidate, safe_name, normalized_file_path, unlock_level, now_iso),
             )
             await db.commit()
 
@@ -751,7 +956,7 @@ class LevelSystem(commands.Cog):
 
         file_deleted = False
         if remove_file and card and card.get("file_path"):
-            file_path = card["file_path"]
+            file_path = self._resolve_level_card_file_path(card["file_path"]) or self._to_project_path(card["file_path"])
             if self._is_path_within(file_path, self.level_card_custom_dir) and os.path.isfile(file_path):
                 try:
                     os.remove(file_path)
@@ -945,10 +1150,10 @@ class LevelSystem(commands.Cog):
     async def render_level_card(self, member, lvl, xp_total, xp_current, xp_needed, background_path=None, layout=None):
         width, height = 1000, 320
         layout = self._sanitize_card_layout(layout or self.DEFAULT_CARD_LAYOUT)
-        resolved_background = (background_path or self.default_level_card_path or "assets/level_card_bg.png").strip()
+        resolved_background = self._resolve_level_card_file_path(background_path)
         image = Image.new("RGBA", (width, height), (12, 18, 34, 255))
 
-        if resolved_background and os.path.exists(resolved_background):
+        if resolved_background:
             try:
                 bg = Image.open(resolved_background).convert("RGBA")
                 image = ImageOps.fit(bg, (width, height), method=getattr(getattr(Image, "Resampling", Image), "LANCZOS"))
@@ -960,13 +1165,13 @@ class LevelSystem(commands.Cog):
         # Soft horizontal gradient overlay for readability regardless of background image.
         for x in range(width):
             ratio = x / (width - 1)
-            alpha = int(125 + 70 * ratio)
+            alpha = int(48 + 42 * ratio)
             draw.line([(x, 0), (x, height)], fill=(8, 14, 28, alpha))
 
         draw.rounded_rectangle(
             (18, 18, width - 18, height - 18),
             radius=32,
-            fill=(9, 14, 26, 220),
+            fill=(9, 14, 26, 136),
             outline=(111, 152, 235, 180),
             width=2,
         )
@@ -1446,8 +1651,14 @@ class LevelSystem(commands.Cog):
         if unlocked_cards:
             lines = []
             for card in unlocked_cards[:25]:
+                if not card:
+                    continue
+                origin = "default" if card.get("is_default") else "custom" if card.get("is_custom") else "built-in"
+                card_key = str(card.get("card_key", "unknown"))
+                display_name = str(card.get("display_name", "Unknown"))
+                unlock_level = int(card.get("unlock_level") or 0)
                 lines.append(
-                    f"- `{card['card_key']}` | {card['display_name']} (unlock {int(card['unlock_level'])})"
+                    f"- `{card_key}` | {display_name} [{origin}] (unlock {unlock_level})"
                 )
             description.append("\nUnlocked cards:\n" + "\n".join(lines))
         else:

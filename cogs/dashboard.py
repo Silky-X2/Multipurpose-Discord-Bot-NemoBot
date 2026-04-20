@@ -808,8 +808,10 @@ class Dashboard(commands.Cog):
             card_flags = []
             if card["is_default"]:
                 card_flags.append("default")
-            if card["is_custom"]:
+            elif card["is_custom"]:
                 card_flags.append("custom")
+            else:
+                card_flags.append("built-in")
             if not card["is_enabled"]:
                 card_flags.append("disabled")
             flags_text = ", ".join(card_flags) if card_flags else "-"
@@ -860,6 +862,7 @@ class Dashboard(commands.Cog):
         body += f"""
 <div class="card">
   <h2>Available Level Cards</h2>
+  <p>Built-in backgrounds are labeled <strong>built-in</strong>; uploaded ones are labeled <strong>custom</strong>.</p>
   <table>
     <thead>
       <tr>
@@ -1205,6 +1208,11 @@ class Dashboard(commands.Cog):
         presence_text = await self.get_setting("presence_text", current_activity_name)
         presence_type = await self.get_setting("presence_type", "watching")
 
+        presence_status = request.query.get("presence_status", "").strip()
+        presence_error = request.query.get("presence_error", "").strip()
+        presence_status_html = f'<p style="color:#9be7c2">{html.escape(presence_status)}</p>' if presence_status else ""
+        presence_error_html = f'<p style="color:#ffb8b8">{html.escape(presence_error)}</p>' if presence_error else ""
+
         type_options = "".join(
             f"<option value=\"{opt}\" {'selected' if opt == presence_type else ''}>{opt}</option>"
             for opt in ["watching", "playing", "listening"]
@@ -1218,13 +1226,107 @@ class Dashboard(commands.Cog):
         body = f"""
 <div class="card">
   <h2>Bot Settings</h2>
+    {presence_status_html}
+    {presence_error_html}
   <form method="post" action="/settings">
+        <input type="hidden" name="section" value="presence" />
     <label>Presence text</label>
     <input type="text" name="presence_text" value="{html.escape(presence_text)}" maxlength="128" />
     <label>Presence type</label>
     <select name="presence_type">{type_options}</select>
     {settings_submit}
   </form>
+</div>
+"""
+
+        birthday_cog = self.bot.get_cog("Birthdays")
+        guilds = sorted(self.bot.guilds, key=lambda g: g.name.lower())
+
+        if birthday_cog and guilds:
+            try:
+                selected_guild_id = int(request.query.get("birthday_guild_id", str(guilds[0].id)))
+            except ValueError:
+                selected_guild_id = guilds[0].id
+            selected_guild = next((g for g in guilds if g.id == selected_guild_id), guilds[0])
+
+            birthday_settings = await birthday_cog.get_guild_settings(selected_guild.id)
+            birthday_status = request.query.get("birthday_status", "").strip()
+            birthday_error = request.query.get("birthday_error", "").strip()
+
+            birthday_status_html = f'<p style="color:#9be7c2">{html.escape(birthday_status)}</p>' if birthday_status else ""
+            birthday_error_html = f'<p style="color:#ffb8b8">{html.escape(birthday_error)}</p>' if birthday_error else ""
+
+            guild_options = "".join(
+                f"<option value=\"{g.id}\" {'selected' if g.id == selected_guild.id else ''}>{html.escape(g.name)} ({g.id})</option>"
+                for g in guilds
+            )
+
+            selected_channel_id = birthday_settings.get("channel_id")
+            selected_role_id = birthday_settings.get("role_id")
+            selected_channel = selected_guild.get_channel(selected_channel_id) if selected_channel_id else None
+            selected_role = selected_guild.get_role(selected_role_id) if selected_role_id else None
+
+            channel_options = ['<option value="">System channel fallback</option>']
+            for channel in sorted(selected_guild.text_channels, key=lambda c: (c.position, c.id)):
+                channel_selected = "selected" if channel.id == selected_channel_id else ""
+                channel_options.append(
+                    f'<option value="{channel.id}" {channel_selected}>#{html.escape(channel.name)} ({channel.id})</option>'
+                )
+            channel_options_html = "".join(channel_options)
+
+            role_options = ['<option value="">No birthday role</option>']
+            available_roles = [role for role in selected_guild.roles if not role.is_default()]
+            for role in sorted(available_roles, key=lambda r: (r.position, r.id), reverse=True):
+                role_selected = "selected" if role.id == selected_role_id else ""
+                role_options.append(
+                    f'<option value="{role.id}" {role_selected}>{html.escape(role.name)} ({role.id})</option>'
+                )
+            role_options_html = "".join(role_options)
+
+            birthday_submit = (
+                '<button type="submit">Save Birthday Settings</button>'
+                if self._permission_allows(permission, "admin")
+                else "<p>Viewer mode: read-only.</p>"
+            )
+
+            body += f"""
+<div class="card">
+    <h2>Birthday Settings</h2>
+    {birthday_status_html}
+    {birthday_error_html}
+    <form method="get" action="/settings">
+        <label>Guild</label>
+        <select name="birthday_guild_id">{guild_options}</select>
+        <button type="submit">Load Guild</button>
+    </form>
+    <p>Current channel: <strong>{html.escape(selected_channel.name) if selected_channel else 'System channel fallback'}</strong></p>
+    <p>Current timezone: <strong>{html.escape(str(birthday_settings.get('timezone', 'UTC')))}</strong></p>
+    <p>Current role: <strong>{html.escape(selected_role.name) if selected_role else 'No birthday role'}</strong></p>
+    <form method="post" action="/settings">
+        <input type="hidden" name="section" value="birthday" />
+        <input type="hidden" name="birthday_guild_id" value="{selected_guild.id}" />
+        <label>Birthday timezone (IANA)</label>
+        <input type="text" name="birthday_timezone" value="{html.escape(str(birthday_settings.get('timezone', 'UTC')))}" maxlength="64" />
+        <label>Announcement channel</label>
+        <select name="birthday_channel_id">{channel_options_html}</select>
+        <label>Birthday role (optional)</label>
+        <select name="birthday_role_id">{role_options_html}</select>
+        {birthday_submit}
+    </form>
+</div>
+"""
+        elif birthday_cog and not guilds:
+            body += """
+<div class="card">
+    <h2>Birthday Settings</h2>
+    <p>Bot is not in any guild.</p>
+</div>
+"""
+        else:
+            body += """
+<div class="card">
+    <h2>Birthday Settings</h2>
+    <p>Birthdays cog is not loaded.</p>
 </div>
 """
 
@@ -1244,6 +1346,68 @@ class Dashboard(commands.Cog):
         await self._authorize(request, required_permission="admin")
         data = await request.post()
 
+        section = self._form_text(data, "section", "presence").strip().lower()
+        if section == "birthday":
+            birthday_cog = self.bot.get_cog("Birthdays")
+            if not birthday_cog:
+                return web.Response(status=503, text="Birthdays cog is not loaded")
+
+            try:
+                guild_id = int(self._form_text(data, "birthday_guild_id", "0"))
+            except ValueError:
+                error = quote("Invalid guild id", safe="")
+                raise web.HTTPFound(location=f"/settings?birthday_error={error}")
+
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                error = quote("Guild not found", safe="")
+                raise web.HTTPFound(location=f"/settings?birthday_error={error}")
+
+            timezone_name = self._form_text(data, "birthday_timezone", "UTC").strip() or "UTC"
+            channel_raw = self._form_text(data, "birthday_channel_id", "").strip()
+            role_raw = self._form_text(data, "birthday_role_id", "").strip()
+
+            channel_id = None
+            role_id = None
+
+            if channel_raw:
+                try:
+                    channel_id = int(channel_raw)
+                except ValueError:
+                    error = quote("Birthday channel id must be numeric", safe="")
+                    raise web.HTTPFound(location=f"/settings?birthday_guild_id={guild_id}&birthday_error={error}")
+
+                channel = guild.get_channel(channel_id)
+                if not isinstance(channel, discord.TextChannel):
+                    error = quote("Selected birthday channel is invalid", safe="")
+                    raise web.HTTPFound(location=f"/settings?birthday_guild_id={guild_id}&birthday_error={error}")
+
+            if role_raw:
+                try:
+                    role_id = int(role_raw)
+                except ValueError:
+                    error = quote("Birthday role id must be numeric", safe="")
+                    raise web.HTTPFound(location=f"/settings?birthday_guild_id={guild_id}&birthday_error={error}")
+
+                role = guild.get_role(role_id)
+                if role is None or role.is_default():
+                    error = quote("Selected birthday role is invalid", safe="")
+                    raise web.HTTPFound(location=f"/settings?birthday_guild_id={guild_id}&birthday_error={error}")
+
+            try:
+                await birthday_cog.update_guild_settings(
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    timezone=timezone_name,
+                    role_id=role_id,
+                )
+            except Exception as exc:
+                error = quote(f"Failed to update birthday settings: {exc}", safe="")
+                raise web.HTTPFound(location=f"/settings?birthday_guild_id={guild_id}&birthday_error={error}")
+
+            status = quote("Birthday settings updated", safe="")
+            raise web.HTTPFound(location=f"/settings?birthday_guild_id={guild_id}&birthday_status={status}")
+
         presence_text = self._form_text(data, "presence_text", "NemoBot").strip()[:128] or "NemoBot"
         presence_type = self._form_text(data, "presence_type", "watching").strip().lower() or "watching"
 
@@ -1261,7 +1425,8 @@ class Dashboard(commands.Cog):
             activity=discord.Activity(type=activity_type, name=presence_text)
         )
 
-        raise web.HTTPFound(location="/settings")
+        status = quote("Bot settings updated", safe="")
+        raise web.HTTPFound(location=f"/settings?presence_status={status}")
 
     async def restart_bot(self, request: web.Request):
         permission = await self._authorize(request, required_permission="dev")
