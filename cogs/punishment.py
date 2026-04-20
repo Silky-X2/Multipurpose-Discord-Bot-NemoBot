@@ -103,7 +103,7 @@ class punishment(commands.Cog):
 			await db.commit()
 
 	# BAN COMMAND
-	@slash_command(name="ban", description="Banne einen Benutzer")
+	@slash_command(name="ban", description="Banne einen Benutzer", default_member_permissions=discord.Permissions(ban_members=True))
 	async def ban(self, ctx, user: discord.User, reason: Option(str, "Grund (optional)", required=False) = "Kein Grund angegeben"):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -128,7 +128,7 @@ class punishment(commands.Cog):
 			await ctx.respond("Ich habe keine Berechtigung, diesen Benutzer zu bannen!", ephemeral=True)
 
 	# UNBAN COMMAND
-	@slash_command(name="unban", description="Entferne einen Bann")
+	@slash_command(name="unban", description="Entferne einen Bann", default_member_permissions=discord.Permissions(ban_members=True))
 	async def unban(self, ctx, user: discord.User, reason: Option(str, "Grund (optional)", required=False) = "Kein Grund"):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -151,7 +151,7 @@ class punishment(commands.Cog):
 			await ctx.respond("Benutzer ist nicht gebannet!", ephemeral=True)
 
 	# KICK COMMAND
-	@slash_command(name="kick", description="Kicke einen Benutzer")
+	@slash_command(name="kick", description="Kicke einen Benutzer", default_member_permissions=discord.Permissions(kick_members=True))
 	async def kick(self, ctx, member: discord.Member, reason: Option(str, "Grund (optional)", required=False) = "Kein Grund angegeben"):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -180,7 +180,7 @@ class punishment(commands.Cog):
 			await ctx.respond("Ich habe keine Berechtigung, diesen Benutzer zu kicken!", ephemeral=True)
 
 	# MUTE COMMAND
-	@slash_command(name="mute", description="Stummschaltung für einen Benutzer")
+	@slash_command(name="mute", description="Stummschaltung für einen Benutzer", default_member_permissions=discord.Permissions(moderate_members=True))
 	async def mute(self, ctx, member: discord.Member, duration: Option(int, "Dauer in Minuten"), reason: Option(str, "Grund (optional)", required=False) = "Kein Grund angegeben"):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -220,7 +220,7 @@ class punishment(commands.Cog):
 			await ctx.respond("Ich habe keine Berechtigung!", ephemeral=True)
 
 	# UNMUTE COMMAND
-	@slash_command(name="unmute", description="Entferne die Stummschaltung von einem Benutzer")
+	@slash_command(name="unmute", description="Entferne die Stummschaltung von einem Benutzer", default_member_permissions=discord.Permissions(moderate_members=True))
 	async def unmute(self, ctx, member: discord.Member, reason: Option(str, "Grund (optional)", required=False) = "Kein Grund"):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -246,7 +246,7 @@ class punishment(commands.Cog):
 			await ctx.respond("Ich habe keine Berechtigung!", ephemeral=True)
 
 	# WARN COMMAND
-	@slash_command(name="warn", description="Warne einen Benutzer")
+	@slash_command(name="warn", description="Warne einen Benutzer", default_member_permissions=discord.Permissions(moderate_members=True))
 	async def warn(self, ctx, member: discord.Member, reason: Option(str, "Grund")):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -289,7 +289,7 @@ class punishment(commands.Cog):
 				pass
 
 	# UNWARN COMMAND
-	@slash_command(name="unwarn", description="Entferne eine Verwarnung")
+	@slash_command(name="unwarn", description="Entferne eine Verwarnung", default_member_permissions=discord.Permissions(moderate_members=True))
 	async def unwarn(self, ctx, member: discord.Member):
 		if not await self.is_mod_or_admin(ctx.author):
 			await ctx.respond("Keine Berechtigung!", ephemeral=True)
@@ -318,7 +318,7 @@ class punishment(commands.Cog):
 		await ctx.respond(embed=embed)
 
 	# WARNS COMMAND
-	@slash_command(name="warns", description="Zeige Verwarnungen eines Benutzers")
+	@slash_command(name="warns", description="Zeige Verwarnungen eines Benutzers", default_member_permissions=discord.Permissions(moderate_members=True))
 	async def warns(self, ctx, member: discord.Member):
 		async with aiosqlite.connect(self.db_path) as db:
 			async with db.execute("""
@@ -352,7 +352,7 @@ class punishment(commands.Cog):
 		await ctx.respond(embed=embed)
 
 	# PUNISHMENTS COMMAND
-	@slash_command(name="punishments", description="Zeige Strafen eines Benutzers")
+	@slash_command(name="punishments", description="Zeige Strafen eines Benutzers", default_member_permissions=discord.Permissions(moderate_members=True))
 	async def punishments(self, ctx, member: discord.User):
 		async with aiosqlite.connect(self.db_path) as db:
 			async with db.execute("""
