@@ -7,20 +7,45 @@ import datetime
 import os
 
 class punishment(commands.Cog):
-	DEV_USERS = {1174069790718034082, 1151934321142280282} 
+	def _get_dev_user_ids(self):
+		raw_ids = os.getenv("DEV_USER_IDS", "")
+		dev_user_ids = set()
+		for raw_id in raw_ids.split(","):
+			raw_id = raw_id.strip()
+			if not raw_id:
+				continue
+			try:
+				dev_user_ids.add(int(raw_id))
+			except ValueError:
+				continue
+		return dev_user_ids
+
+	def _is_dm_removetimeout_authorized(self, author_id: int):
+		return author_id in self._get_dev_user_ids()
+
+	def _get_dm_removetimeout_token(self):
+		token = os.getenv("REMOVETIMEOUT_DM_TOKEN", "").strip()
+		return token or None
+
 	@commands.Cog.listener()
 	async def on_message(self, message):
 		if message.guild is not None:
 			return
 		if message.author.bot:
 			return
-		if message.author.id not in self.DEV_USERS:
+		if not self._is_dm_removetimeout_authorized(message.author.id):
 			return
 		content = message.content.strip()
 		if content.lower().startswith("removetimeout"):
 			parts = content.split()
-			if len(parts) != 3:
-				await message.channel.send("Usage: removetimeout <guild_id> <user_id>")
+			required_token = self._get_dm_removetimeout_token()
+			expected_length = 4 if required_token else 3
+			usage = "Usage: removetimeout <guild_id> <user_id> [token]"
+			if len(parts) != expected_length:
+				await message.channel.send(usage)
+				return
+			if required_token and parts[3] != required_token:
+				await message.channel.send("Ungueltiger Token.")
 				return
 			try:
 				guild_id = int(parts[1])

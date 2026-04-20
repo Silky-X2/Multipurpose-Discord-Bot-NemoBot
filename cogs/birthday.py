@@ -27,10 +27,14 @@ class Birthdays(commands.Cog):
         self._db_initialized = False
         self._db_lock = asyncio.Lock()
         self._guild_settings_cache: Dict[int, GuildBirthdaySettings] = {}
-        self.birthday_check_loop.start()
+
+    async def cog_load(self):
+        if not self.birthday_check_loop.is_running():
+            self.birthday_check_loop.start()
 
     def cog_unload(self):
-        self.birthday_check_loop.cancel()
+        if self.birthday_check_loop.is_running():
+            self.birthday_check_loop.cancel()
 
     async def setup_database(self):
         async with aiosqlite.connect(self.db_path) as db:
