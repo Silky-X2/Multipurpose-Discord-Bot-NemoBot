@@ -1,14 +1,80 @@
 import discord
 from discord.ext import commands, tasks
-from discord.commands import slash_command
-from discord.commands import Option
+from discord.commands import slash_command, Option
 import aiosqlite
 import asyncio
 import datetime
 import os
 
-
 class punishment(commands.Cog):
+	def _get_dev_user_ids(self):
+		raw_ids = os.getenv("DEV_USER_IDS", "")
+		dev_user_ids = set()
+		for raw_id in raw_ids.split(","):
+			raw_id = raw_id.strip()
+			if not raw_id:
+				continue
+			try:
+				dev_user_ids.add(int(raw_id))
+			except ValueError:
+				continue
+		return dev_user_ids
+
+	def _is_dm_removetimeout_authorized(self, author_id: int):
+		return author_id in self._get_dev_user_ids()
+
+	def _get_dm_removetimeout_token(self):
+		token = os.getenv("REMOVETIMEOUT_DM_TOKEN", "").strip()
+		return token or None
+
+	@commands.Cog.listener()
+	async def on_message(self, message):
+		if message.guild is not None:
+			return
+		if message.author.bot:
+			return
+		if not self._is_dm_removetimeout_authorized(message.author.id):
+			return
+		content = message.content.strip()
+		if content.lower().startswith("removetimeout"):
+			parts = content.split()
+			required_token = self._get_dm_removetimeout_token()
+			expected_length = 4 if required_token else 3
+			usage = "Usage: removetimeout <guild_id> <user_id> [token]"
+			if len(parts) != expected_length:
+				await message.channel.send(usage)
+				return
+			if required_token and parts[3] != required_token:
+				await message.channel.send("Ungueltiger Token.")
+				return
+			try:
+				guild_id = int(parts[1])
+				user_id = int(parts[2])
+			except ValueError:
+				await message.channel.send("IDs müssen Zahlen sein.")
+				return
+			guild = self.bot.get_guild(guild_id)
+			if not guild:
+				await message.channel.send(f"Guild mit ID {guild_id} nicht gefunden.")
+				return
+			member = guild.get_member(user_id)
+			if not member:
+				await message.channel.send(f"Mitglied mit ID {user_id} nicht gefunden in Guild {guild_id}.")
+				return
+			mute_role = guild.get_role(self.mute_role_id)
+			if not mute_role:
+				await message.channel.send("Mute-Rolle nicht gefunden!")
+				return
+			if mute_role in member.roles:
+				try:
+					await member.remove_roles(mute_role, reason="Entfernt von Dev per DM")
+					await self.log_punishment(member.id, guild.id, message.author.id, "unmute", "Entfernt von Dev per DM")
+					await message.channel.send(f"Timeout/Mute für {member} in {guild.name} entfernt.")
+				except Exception as e:
+					await message.channel.send(f"Fehler beim Entfernen: {e}")
+			else:
+				await message.channel.send(f"{member} ist nicht gemutet.")
+			return
 
 	def __init__(self, bot):
 		self.bot = bot
@@ -16,7 +82,7 @@ class punishment(commands.Cog):
 		self.mute_role_id = 1448393918323622010  # Mute Role ID
 
 		# MOD ROLE
-		self.mod_roles = [1448393918323622010]
+		self.mod_roles = {1448393918323622010}
 
 	# SETUP DATABASE
 	async def setup_database(self):
@@ -50,10 +116,7 @@ class punishment(commands.Cog):
 	async def is_mod_or_admin(self, member: discord.Member):
 		if member.guild_permissions.administrator:
 			return True
-		for role in member.roles:
-			if role.id in self.mod_roles:
-				return True
-		return False
+		return any(role.id in self.mod_roles for role in member.roles)
 
 	# LOG PUNISHMENT
 	async def log_punishment(self, user_id: int, guild_id: int, mod_id: int, action: str, reason: str, duration: int = None, expires_at: str = None):
@@ -347,4 +410,4 @@ class punishment(commands.Cog):
 def setup(bot):
 	cog = punishment(bot)
 	bot.add_cog(cog)
-	bot.loop.create_task(cog.setup_database())
+	asyncio.get_event_loop().create_task(cog.setup_database())
