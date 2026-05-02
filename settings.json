@@ -1,0 +1,19 @@
+{
+  "presence": {
+    "text": "NemoBot",
+    "type": "watching"
+  },
+  "leveling": {
+    "inactivity_decay": {
+      "enabled": false,
+      "start_after_days": 30,
+      "percent_per_day": 2.0
+    },
+    "rolling_decay": {
+      "enabled": false,
+      "expire_days": 30
+    },
+    "level_card_background": "assets/level_card_bg.png",
+    "level_card_storage_dir": "assets/level_cards"
+  }
+}

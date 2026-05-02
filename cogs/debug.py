@@ -1,3 +1,7 @@
+import asyncio
+import os
+import sys
+
 import discord
 from discord.ext import commands
 
@@ -38,16 +42,39 @@ class Debug(commands.Cog):
             await message.channel.send("Level werden neu berechnet ...")
             level_cog = self.bot.get_cog("LevelSystem")
             if level_cog:
-                await level_cog.recalculate_all_levels(channel=message.channel)
+                try:
+                    await level_cog.recalculate_all_levels(channel=message.channel)
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    # Truncate traceback to avoid exceeding Discord message limits
+                    if len(tb) > 1900:
+                        tb = tb[-1900:]
+                    await message.channel.send(f"Fehler beim Neuberechnen:\n```py\n{tb}\n```")
             else:
                 await message.channel.send("LevelSystem Cog nicht gefunden!")
-        # elif cmd == "restart":
-        #     await message.channel.send("Bot wird neugestartet ...")
-        #     import sys, os, signal
-        #     # Properly stop the bot and exit the process for a restart (external process manager should restart it)
-        #     await message.guild.me.edit(nick=None) if hasattr(message.guild.me, 'edit') else None
-        #     await message.channel.send("Bot-Prozess wird beendet. Bitte stelle sicher, dass ein Prozessmanager (z.B. pm2, systemd, Docker) den Bot neu startet.")
-        #     os.kill(os.getpid(), signal.SIGTERM)
+        elif cmd == "dashboard":
+            dashboard_cog = self.bot.get_cog("Dashboard")
+            if not dashboard_cog:
+                await message.channel.send("Dashboard Cog nicht gefunden!")
+                return
+
+            urls = await dashboard_cog.dashboard_access_urls()
+            lan_line = f"Network: {urls['lan']}\n" if urls.get("lan") else "Network: not detected\n"
+            public_line = f"Public: {urls['public']}\n" if urls.get("public") else "Public: not configured\n"
+            try:
+                await message.author.send(
+                    f"Local: {urls['local']}\n"
+                    f"{lan_line}"
+                    f"{public_line}\n"
+                )
+                await message.channel.send("Look DM.")
+            except discord.Forbidden:
+                await message.channel.send("Ich kann dir keine DM senden. Bitte aktiviere DMs und versuche es erneut.")
+        elif cmd == "restart":
+            await message.channel.send("Bot wird neugestartet ...")
+            await asyncio.sleep(1)
+            os.execv(sys.executable, [sys.executable, *sys.argv])
         else:
             await message.channel.send("Unbekannter Debug-Befehl.")
 
