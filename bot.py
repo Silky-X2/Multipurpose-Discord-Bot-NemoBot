@@ -28,7 +28,7 @@ activity = discord.Activity(type=presence_type, name=presence_text)
 
 bot = discord.Bot (
     intents=intents,
-    debug_guilds=[1257572919153004575],
+    debug_guilds=[1223748094886412420],
     status=status,
     activity=activity
 )

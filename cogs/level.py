@@ -164,14 +164,37 @@ class LevelSystem(commands.Cog):
         # Here: will get posted in #level-up with the id 1482463203966455818 !The id is random for every channel regards of their name!
         self.level_channel = 1482463203966455818
 
+        _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._font_candidates = {
             "regular": [
+                # Bundled font (highest priority – works everywhere)
+                os.path.join(_base_dir, "assets", "fonts", "regular.ttf"),
+                # Linux
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                # macOS
                 "/System/Library/Fonts/Supplemental/Arial.ttf",
                 "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+                # Windows
+                "C:/Windows/Fonts/arial.ttf",
             ],
             "bold": [
+                # Bundled font (highest priority – works everywhere)
+                os.path.join(_base_dir, "assets", "fonts", "bold.ttf"),
+                # Linux
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+                # macOS
                 "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
                 "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
+                # Windows
+                "C:/Windows/Fonts/arialbd.ttf",
             ],
         }
         self._font_cache = {}
